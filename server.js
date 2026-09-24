@@ -40,6 +40,8 @@ app.get('/profile/:id', (req, res) => handleProfile(req, res, db));
 // --- Marcas ---
 app.put( '/marcas', (req, res) => handleMarcas(req, res, db));
 
-app.listen(3000, ()=> {
-    console.log(`App is running on port 3000`)
+const PORT = process.env.PORT || 3000
+
+app.listen(PORT, () => {
+    console.log(`App is running on port ${PORT}`)
 })
