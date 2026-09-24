@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import express from 'express'
 import bcrypt, { hash } from 'bcrypt'
 import cors from 'cors'
@@ -10,11 +11,10 @@ import { handleMarcas } from './controllers/marcas.js'
 const db = knex({
   client: 'pg',
   connection: {
-    host: '127.0.0.1',
-    port: 5432,
-    user: 'postgres',
-    password: 'C$oEeE1029',
-    database: 'nubio',
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL?.includes('neon.tech')
+      ? { rejectUnauthorized: false }
+      : false,
   },
 })
 
@@ -26,7 +26,6 @@ app.use(express.json())
 app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'API funcionando' })
 })
-
 
 // --- Signin ---
 app.post('/signin', (req, res) => handleSignin(req, res, db, bcrypt));
