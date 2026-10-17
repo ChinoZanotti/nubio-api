@@ -6,7 +6,13 @@ import knex from 'knex'
 import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleProfile } from './controllers/projile.js'
+import pg from 'pg'
+
+// ...
 import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk } from './controllers/marcas.js'
+
+// Postgres DATE (OID 1082) -> string "aaaa-mm-dd" tal cual, sin convertir a Date de JS.
+pg.types.setTypeParser(1082, (valor) => valor)
 
 const db = knex({
   client: 'pg',
@@ -21,7 +27,7 @@ const db = knex({
 const app = express()
 
 app.use(cors())
-app.use(express.json())
+app.use(express.json({ limit: '1mb' }))
 
 app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'API funcionando' })
