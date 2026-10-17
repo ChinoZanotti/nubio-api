@@ -6,7 +6,7 @@ import knex from 'knex'
 import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleProfile } from './controllers/projile.js'
-import { handleMarcas } from './controllers/marcas.js'
+import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk } from './controllers/marcas.js'
 
 const db = knex({
   client: 'pg',
@@ -37,7 +37,9 @@ app.post('/register', (req, res) => handleRegister(req, res, db, bcrypt));
 app.get('/profile/:id', (req, res) => handleProfile(req, res, db));
 
 // --- Marcas ---
-app.put( '/marcas', (req, res) => handleMarcas(req, res, db));
+app.get('/marcas', (req, res) => handleGetMarcas(req, res, db))
+app.post('/marcas', (req, res) => handleCreateMarca(req, res, db))
+app.post('/marcas/bulk', (req, res) => handleCreateMarcasBulk(req, res, db))
 
 const PORT = process.env.PORT || 3000
 
