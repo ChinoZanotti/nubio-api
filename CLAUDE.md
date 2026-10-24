@@ -33,6 +33,12 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - CHECK (signo = 'F' OR denominación no vacía): solo las figurativas pueden no tener denominación.
   - UNIQUE (user_id, pais, expediente): evita duplicados, y su índice también cubre las consultas por `user_id`.
 
+- `boletin_marcas` (creada con `sql/002_boletin_marcas.sql`): marcas publicadas en los boletines de DINAPI. Son públicas, sin `user_id`.
+  - Mismas columnas que `marcas` donde significan lo mismo (`expediente`, `clase_niza`, `denominacion`, `signo`, `titular`, `pais`), mismos CHECK.
+  - `fecha_publicacion` DATE (fecha del boletín), `agente`, `matricula`, `tramite` ('Registro de Marcas' / 'Renovación de Marcas'), `referencia` (registro anterior, solo en renovaciones).
+  - UNIQUE (fecha_publicacion, expediente): permite re-importar un boletín sin duplicar.
+  - Se carga con `npm run importar-boletin -- <archivo.csv>` (`scripts/importar-boletin.js`). Los CSV quedan versionados en `data/boletines/`. Formato: 11 columnas, Denominación y Solicitante URL-encoded, UTF-8 con BOM. Para producción, correr el script con `DATABASE_URL` de Neon.
+
 ### Detalles en server.js
 - `pg.types.setTypeParser(1082, v => v)`: las columnas DATE se devuelven como string `"aaaa-mm-dd"` y no como `Date` de JS. Así se evitan corrimientos de día por zona horaria.
 - `express.json({ limit: '1mb' })`: el default de 100kb no alcanzaba para importaciones grandes.
@@ -53,6 +59,9 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - Devuelve `{ insertadas: n, errores: [{ fila, error }] }`. `fila` es el índice (desde 0) en el array recibido; el frontend lo traduce a número de fila del archivo.
   - Máximo 1000 marcas por request.
   - Valida todo primero y hace un único INSERT con `ON CONFLICT DO NOTHING`. Las filas que no vuelven en `returning` se reportan como duplicadas.
+
+### Boletines DINAPI (`controllers/boletines.js`)
+- `GET /boletines/marcas` — todas las marcas del boletín, ordenadas por `fecha_publicacion` desc y `expediente`. Sin paginar todavía (se filtra en el frontend).
 
 ## Validación de marcas
 - `utils/marcaValidation.js` y `utils/paises.js` son COPIAS de `src/utils/marcaValidation.js` y `src/config/paises.js` del frontend (repo `nubio`). Única diferencia: el import usa `./paises.js`, porque Node ESM exige la extensión. Si cambia una regla, hay que cambiarla en los dos repos.

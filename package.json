@@ -8,7 +8,8 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node --watch server.js"
+    "start": "node --watch server.js",
+    "importar-boletin": "node scripts/importar-boletin.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
