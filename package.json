@@ -9,7 +9,8 @@
   "scripts": {
     "test": "node --test",
     "start": "node --watch server.js",
-    "importar-boletin": "node scripts/importar-boletin.js"
+    "importar-boletin": "node scripts/importar-boletin.js",
+    "recalcular-alertas": "node scripts/recalcular-alertas.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

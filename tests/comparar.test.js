@@ -37,6 +37,7 @@ test('compartir solo la primera palabra no da alerta alta', () => {
 test('marcas distintas no generan alerta', () => {
     assert.ok(score('NUBIO', 'TELEFE') < UMBRAL_ALERTA)
     assert.ok(score('ALBIRROJA', 'COCA COLA') < UMBRAL_ALERTA)
+    assert.ok(score('ARSIS', 'L LIXHI BARRIOS STORE') < UMBRAL_ALERTA) // caso real del boletín 2026-10-19
 })
 
 test('la clase pondera: misma suma, relacionada neutra, otra resta', () => {

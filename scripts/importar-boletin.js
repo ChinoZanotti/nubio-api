@@ -5,6 +5,7 @@ import 'dotenv/config'
 import { readFile } from 'node:fs/promises'
 import knex from 'knex'
 import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
+import { generarAlertasParaBoletin } from '../services/alertas.js'
 
 const COLUMNAS_CSV = 11
 const SIGNO_POR_NOMBRE = { Mixta: 'M', Denominativa: 'D', Figurativa: 'F' }
@@ -103,6 +104,13 @@ async function main() {
         console.log(`Ya existían:   ${filas.length - insertadas.length}`)
         console.log(`Con error:     ${errores.length}`)
         errores.forEach((e) => console.log(`  - ${e}`))
+
+        // Cada boletín nuevo se compara contra las marcas de todos los usuarios.
+        const fechas = [...new Set(filas.map((f) => f.fecha_publicacion))]
+        for (const fecha of fechas) {
+            const alertas = await generarAlertasParaBoletin(db, fecha)
+            console.log(`Alertas nuevas (${fecha}): ${alertas}`)
+        }
     } finally {
         // Sin esto el pool de conexiones queda abierto y el script no termina.
         await db.destroy()

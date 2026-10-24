@@ -10,6 +10,8 @@ export const TERMINOS_GENERICOS = new Set([
     'SA', 'SRL', 'SACI', 'SAE', 'SAECA', 'SAIC', 'LTDA', 'CIA', 'INC', 'CORP', 'LLC', 'GMBH', 'LTD',
     // Geográficos
     'PARAGUAY', 'PARAGUAYA', 'PARAGUAYO', 'PY',
+    // Ruido que DINAPI deja en la denominación: "BIGWAY y Logo", "... (Slogan)"
+    'LOGO', 'SLOGAN',
     // Artículos y conectores
     'DE', 'DEL', 'LA', 'EL', 'LOS', 'LAS', 'Y', 'E', 'THE', 'AND', 'OF',
 ])

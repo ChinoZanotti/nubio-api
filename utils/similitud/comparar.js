@@ -12,6 +12,9 @@ const SIN_PENALIDAD_CLASE = 95
 const AJUSTE_CLASE = { misma: 5, relacionada: 0, otra: -15 }
 
 const LARGO_MINIMO_TOKEN = 3
+// Por debajo de esto dos palabras no "coinciden": ARSIS y BARRIOS se parecen
+// 0.68 en letras, pero nadie las confundiría.
+const PISO_PALABRA = 0.75
 
 // Parecido fonético: la mejor de las dos lecturas (español o guaraní).
 function simFonetica(a, b) {
@@ -25,9 +28,9 @@ const simPalabra = (a, b) => Math.max(simRatio(a, b), simFonetica(a, b))
 
 // Qué parte de la marca "origen" aparece (parecida) en la marca "destino".
 // Para cada palabra del origen buscamos la más parecida del destino y
-// promediamos, pesando por largo. Así:
+// promediamos, pesando por largo. Las que no llegan al piso cuentan 0. Así:
 //   "NUBIO" vs "NUBIO CAFE"       -> 1.0 (toda mi marca está en la otra)
-//   "CAFE NUBIO" vs "CAFE TORRES" -> ~0.7 (solo coincide la mitad)
+//   "CAFE NUBIO" vs "CAFE TORRES" -> ~0.44 (solo coincide CAFE)
 function cobertura(origen, destino) {
     const palabras = origen.filter((t) => t.length >= LARGO_MINIMO_TOKEN)
     const candidatas = destino.filter((t) => t.length >= LARGO_MINIMO_TOKEN)
@@ -36,7 +39,7 @@ function cobertura(origen, destino) {
     let pesos = 0
     for (const p of palabras) {
         const mejor = Math.max(...candidatas.map((c) => simPalabra(p, c)))
-        suma += mejor * p.length
+        if (mejor >= PISO_PALABRA) suma += mejor * p.length
         pesos += p.length
     }
     return suma / pesos

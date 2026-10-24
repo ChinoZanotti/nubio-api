@@ -11,6 +11,7 @@ import pg from 'pg'
 // ...
 import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk } from './controllers/marcas.js'
 import { handleGetBoletinMarcas } from './controllers/boletines.js'
+import { handleGetAlertas, handleUpdateAlerta } from './controllers/alertas.js'
 
 // Postgres DATE (OID 1082) -> string "aaaa-mm-dd" tal cual, sin convertir a Date de JS.
 pg.types.setTypeParser(1082, (valor) => valor)
@@ -50,6 +51,10 @@ app.post('/marcas/bulk', (req, res) => handleCreateMarcasBulk(req, res, db))
 
 // --- Boletines DINAPI ---
 app.get('/boletines/marcas', (req, res) => handleGetBoletinMarcas(req, res, db))
+
+// --- Alertas ---
+app.get('/alertas', (req, res) => handleGetAlertas(req, res, db))
+app.patch('/alertas/:id', (req, res) => handleUpdateAlerta(req, res, db))
 
 const PORT = process.env.PORT || 3000
 

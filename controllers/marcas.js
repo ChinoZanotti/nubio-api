@@ -1,4 +1,5 @@
 import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
+import { generarAlertasParaMarcas } from '../services/alertas.js'
 
 const MAX_IMPORTACION = 1000
 const COLUMNAS = ['id', 'fecha_solicitud', 'expediente', 'clase_niza', 'denominacion', 'signo', 'titular', 'pais']
@@ -18,6 +19,17 @@ function parseUserId(valor) {
 // así no se puede colar ninguna otra columna (ej: un "id" o "created_at" en el body).
 function aFila(marca, userId) {
     return { ...marca, denominacion: marca.denominacion || null, user_id: userId }
+}
+
+// La marca ya se guardó: si falla la generación de alertas no queremos
+// responder error y que el usuario la vuelva a cargar. Se registra y listo;
+// `npm run recalcular-alertas` las recupera después.
+async function generarAlertasSinFallar(db, marcaIds) {
+    try {
+        await generarAlertasParaMarcas(db, marcaIds)
+    } catch (err) {
+        console.error('No se pudieron generar alertas:', err)
+    }
 }
 
 export const handleGetMarcas = async (req, res, db) => {
@@ -52,6 +64,7 @@ export const handleCreateMarca = async (req, res, db) => {
 
     try {
         const [nueva] = await db('marcas').insert(aFila(marca, userId)).returning(COLUMNAS)
+        await generarAlertasSinFallar(db, [nueva.id])
         res.status(201).json(nueva)
     } catch (err) {
         if (err.code === UNIQUE_VIOLATION) {
@@ -105,7 +118,9 @@ export const handleCreateMarcasBulk = async (req, res, db) => {
             .insert(validas.map((v) => aFila(v.marca, userId)))
             .onConflict(['user_id', 'pais', 'expediente'])
             .ignore()
-            .returning(['pais', 'expediente'])
+            .returning(['id', 'pais', 'expediente'])
+
+        await generarAlertasSinFallar(db, insertadas.map((m) => m.id))
 
         // 3) Las que no volvieron en `returning` son duplicadas.
         const clave = (m) => `${m.pais}|${m.expediente}`
