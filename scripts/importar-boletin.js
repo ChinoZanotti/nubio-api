@@ -6,12 +6,17 @@ import { readFile } from 'node:fs/promises'
 import knex from 'knex'
 import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
 import { generarAlertasParaBoletin } from '../services/alertas.js'
+import { parsearLineaCsv } from '../utils/csv.js'
 
 const COLUMNAS_CSV = 11
-const SIGNO_POR_NOMBRE = { Mixta: 'M', Denominativa: 'D', Figurativa: 'F' }
+// Los diarios traen el nombre; si llega la letra (M, D, F, T, S) se usa tal cual.
+const SIGNO_POR_NOMBRE = { Mixta: 'M', Denominativa: 'D', Figurativa: 'F', Tridimensional: 'T', Sonora: 'S' }
+// DINAPI usa UK para el Reino Unido; el código ISO (y el de Nubio) es GB
+const PAIS_ISO = { UK: 'GB' }
 
 // Denominación y Solicitante vienen URL-encoded ("CAF%C3%89" = "CAFÉ").
-// Por eso las comas del texto llegan como %2C y podemos separar con split(',').
+// Agente NO: si tiene coma viene entre comillas ("Ramirez Gonzalez, Sergio"),
+// por eso se separa con parsearLineaCsv y no con split(',').
 function decodificar(valor) {
     try {
         return decodeURIComponent(valor)
@@ -23,7 +28,7 @@ function decodificar(valor) {
 const vacioANull = (v) => (v === '' ? null : v)
 
 function parsearFila(linea) {
-    const celdas = linea.split(',').map((c) => c.trim())
+    const celdas = parsearLineaCsv(linea).map((c) => c.trim())
     if (celdas.length !== COLUMNAS_CSV) {
         return { error: `tiene ${celdas.length} columnas en vez de ${COLUMNAS_CSV}` }
     }
@@ -38,7 +43,7 @@ function parsearFila(linea) {
         denominacion: decodificar(denominacion),
         signo: SIGNO_POR_NOMBRE[signo] ?? signo,
         titular: decodificar(solicitante),
-        pais,
+        pais: PAIS_ISO[pais] ?? pais,
     })
     const errores = validarMarca(marca)
     if (Object.keys(errores).length > 0) {

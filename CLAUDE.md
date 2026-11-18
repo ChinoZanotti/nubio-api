@@ -26,18 +26,21 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - `expediente` TEXT NOT NULL, CHECK solo dígitos. Es TEXT a propósito, para conservar ceros a la izquierda.
   - `clase_niza` SMALLINT NOT NULL, CHECK 1..45
   - `denominacion` TEXT, nullable
-  - `signo` CHAR(1) NOT NULL, CHECK IN ('M', 'D', 'F')
+  - `signo` CHAR(1) NOT NULL, CHECK `marcas_signo_valido`: M (Mixta), D (Denominativa), F (Figurativa), T (Tridimensional), S (Sonora). T y S se agregaron con `sql/004_signos_tridimensional_sonora.sql`; las letras están confirmadas en el buscador de DINAPI.
   - `titular` TEXT NOT NULL
-  - `pais` CHAR(2) NOT NULL, código ISO 3166-1 alfa-2
+  - `pais` CHAR(2) NOT NULL, código ISO 3166-1 alfa-2, más dos códigos propios de DINAPI: `XX` (sin especificar) y `EP` (Unión Europea).
   - `created_at` TIMESTAMPTZ NOT NULL DEFAULT now()
-  - CHECK (signo = 'F' OR denominación no vacía): solo las figurativas pueden no tener denominación.
+  - CHECK `marcas_denominacion_obligatoria`: solo F, T y S pueden no tener denominación (`SIGNOS_SIN_TEXTO`).
   - UNIQUE (user_id, pais, expediente): evita duplicados, y su índice también cubre las consultas por `user_id`.
 
 - `boletin_marcas` (creada con `sql/002_boletin_marcas.sql`): marcas publicadas en los boletines de DINAPI. Son públicas, sin `user_id`.
   - Mismas columnas que `marcas` donde significan lo mismo (`expediente`, `clase_niza`, `denominacion`, `signo`, `titular`, `pais`), mismos CHECK.
   - `fecha_publicacion` DATE (fecha del boletín), `agente`, `matricula`, `tramite` ('Registro de Marcas' / 'Renovación de Marcas'), `referencia` (registro anterior, solo en renovaciones).
   - UNIQUE (fecha_publicacion, expediente): permite re-importar un boletín sin duplicar.
-  - Se carga con `npm run importar-boletin -- <archivo.csv>` (`scripts/importar-boletin.js`). Los CSV quedan versionados en `data/boletines/`. Formato: 11 columnas, Denominación y Solicitante URL-encoded, UTF-8 con BOM. Para producción, correr el script con `DATABASE_URL` de Neon. Al terminar, genera las alertas de ese boletín.
+  - Se carga con `npm run importar-boletin -- <archivo.csv>` (`scripts/importar-boletin.js`). Los CSV quedan versionados en `data/boletines/aaaa-mm-dd.csv`, uno por día hábil. Formato: 11 columnas, Denominación y Solicitante URL-encoded, Agente entre comillas si tiene coma (se parsea con `utils/csv.js`, no con split), UTF-8 con BOM. El importador traduce `UK` → `GB`. Para producción, correr el script con `DATABASE_URL` de Neon. Al terminar, genera las alertas de ese boletín.
+  - DINAPI publica dos formatos: el **diario** (`boletin_marcas_principales_aaaa-mm-dd.csv`, ya en nuestro formato: solo renombrar) y el **reporte semanal** "Marcas Recibidas" (5 líneas de encabezado, fechas dd/mm/aaaa, texto plano, signo en letra, matrícula con punto). El semanal se pasa a diarios con `npm run convertir-boletin-semanal -- <reporte.csv> [carpeta]`, que no pisa archivos existentes.
+  - **Preferir siempre el diario:** el semanal pasa por Excel, que convierte números en fechas ("595" → "17/08/1901") y puede borrar ceros a la izquierda. El conversor avisa cada caso con el valor probable (días desde 30/12/1899); verificarlo en el buscador de DINAPI y corregir el CSV a mano antes de importar.
+  - Ventana cargada: boletines de los últimos ~4 meses (60 días hábiles de oposición ≈ 85-90 corridos, más margen por feriados y por el desfase con la publicación en el diario).
 
 - `alertas` (creada con `sql/003_alertas.sql`): posible conflicto entre una marca de un usuario y una del boletín.
   - `marca_id` → `marcas(id)` y `boletin_marca_id` → `boletin_marcas(id)`, ambas ON DELETE CASCADE. No hay `user_id`: el dueño sale de `marcas.user_id` con JOIN.
@@ -115,7 +118,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - si las renovaciones deben quedar excluidas;
   - cómputo del plazo: fecha del boletín vs. última publicación en el diario;
   - criterios de las Directrices de Examen de Marcas DINAPI (Res. 259/2025), sección derechos de terceros.
-- Cargar los feriados trasladables del año en `utils/feriados.js`.
+- Cargar los feriados trasladables del año en `utils/feriados.js`. 2026: Boquerón trasladado al 28/09, deducido de los boletines (falta confirmar con el decreto); 1/3 y 12/6 sin revisar.
 
 ## Cómo ayudar en este proyecto
 El dueño de este proyecto está aprendiendo Express, Postgres, Git y deployment en profundidad mientras lo construye. Preferencia explícita: explicar el porqué de cada cambio, no solo tirar código.

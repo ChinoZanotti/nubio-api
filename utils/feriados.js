@@ -18,7 +18,11 @@ const FIJOS = [
 ]
 
 // Ej: { 2026: { agregar: ['2026-06-15'], quitar: ['2026-06-12'] } }
-const AJUSTES = {}
+const AJUSTES = {
+    // Boquerón trasladado al lunes 28/09. Deducido de los boletines: DINAPI no
+    // recibió solicitudes el 28 y sí el 29. Confirmar con el decreto del año.
+    2026: { agregar: ['2026-09-28'], quitar: ['2026-09-29'] },
+}
 
 // Domingo de Pascua (algoritmo de Meeus/Jones/Butcher para el calendario gregoriano).
 export function domingoDePascua(anio) {

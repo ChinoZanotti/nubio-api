@@ -17,13 +17,19 @@ export const CODIGOS_PAIS = [
   'ST', 'SV', 'SX', 'SY', 'SZ', 'TC', 'TD', 'TF', 'TG', 'TH', 'TJ', 'TK', 'TL', 'TM', 'TN', 'TO',
   'TR', 'TT', 'TV', 'TW', 'TZ', 'UA', 'UG', 'UM', 'US', 'UY', 'UZ', 'VA', 'VC', 'VE', 'VG', 'VI',
   'VN', 'VU', 'WF', 'WS', 'YE', 'YT', 'ZA', 'ZM', 'ZW',
+  // No son ISO, pero DINAPI los usa en los boletines
+  'EP', 'XX',
 ]
 
 export const PAIS_POR_DEFECTO = 'PY'
 
 const nombres = new Intl.DisplayNames(['es'], { type: 'region' })
 
+// Intl.DisplayNames no conoce los códigos propios de DINAPI
+const NOMBRES_DINAPI = { EP: 'Unión Europea', XX: 'Sin especificar' }
+
 export function nombrePais(codigo) {
+  if (NOMBRES_DINAPI[codigo]) return NOMBRES_DINAPI[codigo]
   return nombres.of(codigo) ?? codigo
 }
 

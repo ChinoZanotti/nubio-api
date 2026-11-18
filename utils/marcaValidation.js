@@ -1,11 +1,17 @@
 import { CODIGOS_PAIS } from './paises.js'
 
-// Pendiente confirmar con el abogado el significado de cada letra.
+// Tipos de signo, con la letra que usa DINAPI en los boletines.
 export const SIGNOS = {
   M: 'Mixta',
   D: 'Denominativa',
   F: 'Figurativa',
+  T: 'Tridimensional',
+  S: 'Sonora',
 }
+
+// Signos que pueden no tener texto: un logo, una forma, un sonido.
+// Para el resto la denominación es obligatoria.
+export const SIGNOS_SIN_TEXTO = ['F', 'T', 'S']
 
 const CLASE_MIN = 1
 const CLASE_MAX = 45
@@ -98,11 +104,11 @@ export function validarMarca(marca) {
   }
 
   if (!SIGNOS[marca.signo]) {
-    errores.signo = 'El signo debe ser M, D o F.'
+    errores.signo = 'El signo debe ser M, D, F, T o S.'
   }
 
-  // Una marca figurativa puede ser solo un logo, sin texto.
-  if (!marca.denominacion && marca.signo !== 'F') {
+  // Figurativas, tridimensionales y sonoras pueden no tener texto.
+  if (!marca.denominacion && !SIGNOS_SIN_TEXTO.includes(marca.signo)) {
     errores.denominacion = 'Ingresá la denominación.'
   }
 
