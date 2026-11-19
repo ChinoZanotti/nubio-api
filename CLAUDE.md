@@ -14,8 +14,9 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Desarrollo local: Postgres local, base `nubio`.
 - La conexión SIEMPRE se arma a partir de `process.env.DATABASE_URL` (nunca hardcodear host/user/password — ya pasamos por ese bug en producción una vez).
 - `db.js` (`crearDb()`) es la ÚNICA configuración de la conexión: la usan `server.js` y los scripts. No armar `knex({...})` a mano en otro lado. También fija el parser de DATE (ver abajo).
-- TLS hacia Neon (cuando la URL contiene `neon.tech`) con `rejectUnauthorized: true`: verifica el certificado y el host, no solo cifra. Si alguna vez falla con un error de certificado, no volver a poner `false`: investigar la causa.
-- `npm run probar-conexion` prueba la conexión con esa misma config. Contra Neon, sin tocar el `.env`: `DATABASE_URL="postgresql://...neon.tech/..." npm run probar-conexion` (en Git Bash).
+- TLS hacia Neon (cuando el hostname termina en `neon.tech`) con `rejectUnauthorized: true`: verifica el certificado y el host, no solo cifra. Si alguna vez falla con un error de certificado, no volver a poner `false`: investigar la causa.
+- `sslmode` en la URL: `pg` deja que la URL pise el `ssl` de la config. `db.js` corta el arranque si una URL de Neon trae `sslmode=no-verify` o `disable`, y saca de la URL cualquier otro `sslmode` (como el `require` que trae Neon), así siempre manda nuestro `rejectUnauthorized: true`. Importa porque `pg` 9 va a cambiar `require` a "cifrar sin verificar"; con esto, actualizar `pg` no nos quita la verificación. Tests en `tests/db.test.js`.
+- `npm run probar-conexion` prueba la conexión con esa misma config y lo comprueba de verdad: `pg_stat_ssl` (Postgres dice si va cifrada) y `socket.authorized` (Node dice si verificó el certificado). Con Neon, si alguna de las dos falla, termina con error. Contra Neon, sin tocar el `.env`: `DATABASE_URL="postgresql://...neon.tech/..." npm run probar-conexion` (en Git Bash).
 - Sintaxis SQL específica de Postgres (ej: `TRUNCATE TABLE nombre RESTART IDENTITY;`).
 - Cambios de esquema: se guardan como scripts numerados en `sql/` (`001_marcas.sql`, …) y se corren a mano en local y en el SQL Editor de Neon. Todavía no usamos migraciones de Knex.
 
@@ -154,8 +155,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1, N2, N3, N4, N7, N8, I1 e I2. Faltan:
-  - N5: verificar en Render que `DATABASE_URL` no tenga `sslmode=no-verify` ni `disable`, porque pisan el `rejectUnauthorized` de `db.js`. Hacer que `probar-conexion` consulte `pg_stat_ssl` en vez de mirar solo el host.
+- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1, N2, N3, N4, N5, N7, N8, I1 e I2. Faltan:
   - N6: un segundo límite de `/signin` por email (con demora, no bloqueo duro, para que no sirva para bloquear la cuenta de otro).
   - N9: paginar `/boletines/marcas` o limitarlo por usuario.
   - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).- Seguridad, lo que queda de la primera revisión de Case (noviembre 2026):
