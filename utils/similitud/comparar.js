@@ -16,31 +16,51 @@ const LARGO_MINIMO_TOKEN = 3
 // 0.68 en letras, pero nadie las confundiría.
 const PISO_PALABRA = 0.75
 
-// Parecido fonético: la mejor de las dos lecturas (español o guaraní).
-function simFonetica(a, b) {
-    return Math.max(
-        simRatio(claveEspanol(a), claveEspanol(b)),
-        simRatio(claveGuarani(a), claveGuarani(b)),
-    )
+// Deja una marca lista para comparar: normalizada, sin genéricos y con sus claves
+// fonéticas (de la marca entera y de cada palabra).
+//
+// Por qué existe: normalizar y sacar las claves fonéticas cuesta decenas de
+// expresiones regulares por marca. Antes se hacía dentro de cada comparación,
+// así que con 1000 marcas propias cada marca del boletín se volvía a procesar
+// 1000 veces, siempre con el mismo resultado. Ahora se prepara una vez y se
+// compara muchas.
+export function prepararMarca(marca) {
+    const lista = quitarGenericos(tokens(marca.denominacion))
+    const texto = lista.join(' ')
+    return {
+        clase_niza: marca.clase_niza,
+        texto,
+        esp: claveEspanol(texto),
+        gua: claveGuarani(texto),
+        // Solo las palabras que cuentan para la cobertura (las muy cortas no).
+        palabras: lista
+            .filter((t) => t.length >= LARGO_MINIMO_TOKEN)
+            .map((t) => ({ texto: t, esp: claveEspanol(t), gua: claveGuarani(t) })),
+    }
 }
 
-const simPalabra = (a, b) => Math.max(simRatio(a, b), simFonetica(a, b))
+// Parecido fonético: la mejor de las dos lecturas (español o guaraní).
+// Recibe dos cosas con { esp, gua } ya calculados (marcas o palabras preparadas).
+function simFonetica(a, b) {
+    return Math.max(simRatio(a.esp, b.esp), simRatio(a.gua, b.gua))
+}
+
+const simPalabra = (a, b) => Math.max(simRatio(a.texto, b.texto), simFonetica(a, b))
 
 // Qué parte de la marca "origen" aparece (parecida) en la marca "destino".
 // Para cada palabra del origen buscamos la más parecida del destino y
 // promediamos, pesando por largo. Las que no llegan al piso cuentan 0. Así:
 //   "NUBIO" vs "NUBIO CAFE"       -> 1.0 (toda mi marca está en la otra)
 //   "CAFE NUBIO" vs "CAFE TORRES" -> ~0.44 (solo coincide CAFE)
-function cobertura(origen, destino) {
-    const palabras = origen.filter((t) => t.length >= LARGO_MINIMO_TOKEN)
-    const candidatas = destino.filter((t) => t.length >= LARGO_MINIMO_TOKEN)
+function cobertura(palabras, candidatas) {
     if (!palabras.length || !candidatas.length) return 0
     let suma = 0
     let pesos = 0
     for (const p of palabras) {
-        const mejor = Math.max(...candidatas.map((c) => simPalabra(p, c)))
-        if (mejor >= PISO_PALABRA) suma += mejor * p.length
-        pesos += p.length
+        let mejor = 0
+        for (const c of candidatas) mejor = Math.max(mejor, simPalabra(p, c))
+        if (mejor >= PISO_PALABRA) suma += mejor * p.texto.length
+        pesos += p.texto.length
     }
     return suma / pesos
 }
@@ -54,19 +74,24 @@ function contencion(a, b) {
 
 // Compara una marca propia con una del boletín. Cada una es { denominacion, clase_niza }.
 // Devuelve { score (0-100), nivel ('alta' | 'media' | null), motivos, relacionClase }.
+// Cómoda para comparar un par suelto (y en los tests). Para comparar muchas
+// contra muchas, preparar cada una una vez y usar compararPreparadas.
 export function compararMarcas(mia, ajena) {
+    return compararPreparadas(prepararMarca(mia), prepararMarca(ajena))
+}
+
+// Igual que compararMarcas, pero con marcas que ya pasaron por prepararMarca.
+export function compararPreparadas(mia, ajena) {
     const relacion = relacionClase(mia.clase_niza, ajena.clase_niza)
-    const ta = quitarGenericos(tokens(mia.denominacion))
-    const tb = quitarGenericos(tokens(ajena.denominacion))
-    if (!ta.length || !tb.length) {
+    if (!mia.texto || !ajena.texto) {
         return { score: 0, nivel: null, motivos: [], relacionClase: relacion }
     }
 
-    const a = ta.join(' ')
-    const b = tb.join(' ')
+    const a = mia.texto
+    const b = ajena.texto
     const orto = simRatio(a, b)
-    const fon = simFonetica(a, b)
-    const palabra = Math.max(cobertura(ta, tb), cobertura(tb, ta))
+    const fon = simFonetica(mia, ajena)
+    const palabra = Math.max(cobertura(mia.palabras, ajena.palabras), cobertura(ajena.palabras, mia.palabras))
     const cont = contencion(a, b)
 
     // Nos quedamos con la señal más fuerte. Las de palabra y contención se

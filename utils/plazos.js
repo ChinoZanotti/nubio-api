@@ -45,6 +45,19 @@ export function diasHabilesEntre(desde, hasta) {
     return dias
 }
 
+// Memoria de vencimientos ya calculados: fecha de publicación -> vencimiento.
+// Hay miles de marcas por boletín pero pocas fechas distintas (una por día
+// hábil), y sumar 60 días hábiles revisando feriados es caro. Sin esto, filtrar
+// las 9000 publicaciones en plazo tardaba 1,2 s; con esto, unos milisegundos.
+// Es seguro porque el resultado solo depende de la fecha y de los feriados, que
+// están en el código: si cambian, hay deploy, y el deploy reinicia la memoria.
+const vencimientos = new Map()
+
 export function venceOposicion(fechaPublicacion) {
-    return sumarDiasHabiles(fechaPublicacion, DIAS_OPOSICION)
+    let vence = vencimientos.get(fechaPublicacion)
+    if (vence === undefined) {
+        vence = sumarDiasHabiles(fechaPublicacion, DIAS_OPOSICION)
+        vencimientos.set(fechaPublicacion, vence)
+    }
+    return vence
 }

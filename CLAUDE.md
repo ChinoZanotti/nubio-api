@@ -54,10 +54,13 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - Señales: parecido ortográfico (promedio Jaro-Winkler + Levenshtein), fonético (doble clave: lectura española y guaraní, se queda con la mejor), cobertura por palabra (elemento dominante, con piso 0.75) y contención. Toma la más fuerte.
   - Clase Niza: pondera, no filtra (Ley 1294/98, art. 15). Misma +5, relacionada 0 (`clasesRelacionadas.js`), otra −15; con base ≥ 95 no se resta (posible notoria, art. 2 inc. g).
   - Umbral de alerta 70; alta ≥ 85.
-- `utils/plazos.js` + `utils/feriados.js`: plazo de oposición = 60 días hábiles desde el primer día hábil siguiente a la publicación (art. 46). Es ESTIMADO: usamos la fecha del boletín, no la de la última publicación en el diario. Feriados trasladables: cargarlos a mano en `AJUSTES` cada año.
+  - Rendimiento: `prepararMarca(m)` normaliza y saca las claves fonéticas una sola vez, y `compararPreparadas(a, b)` compara marcas ya preparadas. `compararMarcas` es el atajo para comparar un par suelto. Para muchos contra muchos, preparar siempre antes: si no, cada marca del boletín se vuelve a procesar una vez por cada marca propia. `lev` y `jaro` reusan buffers (typed arrays). En noviembre de 2026 se midió que el resultado es idéntico en 658.950 pares reales y 10 veces más rápido: ~155 ms por marca contra ~9000 publicadas. Si se toca el motor, repetir esa comparación viejo contra nuevo.
+- `utils/plazos.js` + `utils/feriados.js`: plazo de oposición = 60 días hábiles desde el primer día hábil siguiente a la publicación (art. 46). Es ESTIMADO: usamos la fecha del boletín, no la de la última publicación en el diario. Feriados trasladables: cargarlos a mano en `AJUSTES` cada año. `venceOposicion` guarda en memoria el resultado de cada fecha (hay miles de marcas pero pocas fechas), así que cambiar feriados requiere reiniciar el servidor (un deploy lo hace).
 - `services/alertas.js`: genera e inserta alertas. Excluye figurativas, renovaciones y el mismo expediente (la propia solicitud).
+  - El motor cede el turno cada 20 ms (`setImmediate`) para no congelar la API: Node tiene un solo hilo. Inserta en tandas de 1000 (límite de parámetros de Postgres).
   - `generarAlertasParaBoletin(db, fecha)`: un boletín contra todas las marcas. Lo llama el importador.
-  - `generarAlertasParaMarcas(db, ids)`: marcas nuevas contra lo publicado con plazo abierto. Lo llaman `POST /marcas` y `/marcas/bulk` (si falla, se loguea y no rompe la creación).
+  - `generarAlertasParaMarcas(db, ids)`: marcas nuevas contra lo publicado con plazo abierto. `POST /marcas` la espera (una marca tarda menos de 1 s); si falla, se loguea y no rompe la creación.
+  - `encolarAlertasParaMarcas(db, ids)`: lo mismo, pero en segundo plano y en una fila que procesa los trabajos de a uno. La usa `/marcas/bulk`, que responde sin esperar (el frontend avisa que las alertas tardan unos minutos). La fila vive en memoria: si el servidor se reinicia a mitad de un trabajo, esas alertas se recuperan con `npm run recalcular-alertas`.
 - `npm run recalcular-alertas`: vuelve a correr el motor sobre todos los boletines (solo agrega). Usarlo después de ajustar el motor. Las alertas viejas que el motor nuevo ya no generaría NO se borran.
 - `npm test`: tests con `node:test` (sin dependencias).
 
@@ -123,8 +126,6 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Restringir CORS al dominio real del frontend.
 - Roles y permisos: admin vs usuario regular.
 - Seguridad, resto del plan de la revisión de Case (noviembre 2026), en orden:
-  - Correr `sql/005_largo_maximo_marcas.sql` en Neon.
-  - Sacar la generación de alertas del request: un `/marcas/bulk` de 1000 marcas compara 1000 × miles de marcas del boletín de forma síncrona y bloquea la API para todos mientras dura.
   - Validar `/register` y `/signin` con un esquema (tipos, email normalizado, password 10-128).
   - `helmet()`, CORS restringido, `rejectUnauthorized: true` hacia Neon, error handler central, `NODE_ENV=production` y `start` sin `--watch`.
   - Si hay dominio propio: pasar el token a cookie HttpOnly (hoy va en localStorage porque frontend y API están en subdominios distintos de onrender.com y Safari bloquea esas cookies).

@@ -1,5 +1,5 @@
 import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
-import { generarAlertasParaMarcas } from '../services/alertas.js'
+import { generarAlertasParaMarcas, encolarAlertasParaMarcas } from '../services/alertas.js'
 
 const MAX_IMPORTACION = 1000
 const COLUMNAS = ['id', 'fecha_solicitud', 'expediente', 'clase_niza', 'denominacion', 'signo', 'titular', 'pais']
@@ -17,6 +17,8 @@ function aFila(marca, userId) {
     return { ...marca, denominacion: marca.denominacion || null, user_id: userId }
 }
 
+// Para UNA marca (menos de un segundo) sí esperamos: así, cuando el usuario
+// abre Alertas, ya están. Para importaciones, ver encolarAlertasParaMarcas.
 // La marca ya se guardó: si falla la generación de alertas no queremos
 // responder error y que el usuario la vuelva a cargar. Se registra y listo;
 // `npm run recalcular-alertas` las recupera después.
@@ -107,7 +109,10 @@ export const handleCreateMarcasBulk = async (req, res, db) => {
             .ignore()
             .returning(['id', 'pais', 'expediente'])
 
-        await generarAlertasSinFallar(db, insertadas.map((m) => m.id))
+        // Sin await, a propósito: con cientos de marcas el motor tarda minutos.
+        // Respondemos ya y las alertas se generan en segundo plano, en la fila
+        // de trabajos (de a uno, cediendo el turno para no congelar la API).
+        encolarAlertasParaMarcas(db, insertadas.map((m) => m.id))
 
         // 3) Las que no volvieron en `returning` son duplicadas.
         const clave = (m) => `${m.pais}|${m.expediente}`

@@ -31,10 +31,14 @@ export const handleGetAlertas = async (req, res, db) => {
             .orderByRaw(`a.estado = 'nueva' desc, a.score desc, b.fecha_publicacion desc`)
 
         // El plazo se calcula acá y no en SQL porque depende de los feriados.
+        // Muchas alertas comparten fecha de vencimiento: los días restantes se
+        // calculan una vez por vencimiento (venceOposicion ya tiene su memoria).
         const hoyPy = hoy()
+        const restantes = new Map()
         const alertas = filas.map((f) => {
             const vence = venceOposicion(f.fecha_publicacion)
-            return { ...f, vence_oposicion: vence, dias_habiles_restantes: diasHabilesEntre(hoyPy, vence) }
+            if (!restantes.has(vence)) restantes.set(vence, diasHabilesEntre(hoyPy, vence))
+            return { ...f, vence_oposicion: vence, dias_habiles_restantes: restantes.get(vence) }
         })
         res.json(alertas)
     } catch (err) {
