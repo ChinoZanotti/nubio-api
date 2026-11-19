@@ -1,6 +1,7 @@
 import { firmarToken } from '../utils/token.js'
 import { normalizarEmail } from '../utils/authValidation.js'
 import { COSTO_BCRYPT } from './register.js'
+import { registrarError } from '../utils/log.js'
 
 // Siempre el mismo mensaje: si dijéramos "ese email no existe", cualquiera
 // podría averiguar quién tiene cuenta.
@@ -46,7 +47,7 @@ export const handleSignin = async (req, res, db, bcrypt) => {
         // ni cambiarle el id adentro sin que la firma deje de coincidir.
         res.json({ token: firmarToken(user.id), user })
     } catch (err) {
-        console.error('Error en signin:', err.code ?? err.message)
+        registrarError('POST /signin', err)
         res.status(500).json({ error: 'Error en el servidor. Probá de nuevo en unos minutos.' })
     }
 }

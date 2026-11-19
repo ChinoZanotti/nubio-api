@@ -1,5 +1,6 @@
 import { compararPreparadas, prepararMarca, UMBRAL_ALERTA } from '../utils/similitud/index.js'
 import { hoy, venceOposicion } from '../utils/plazos.js'
+import { registrarError } from '../utils/log.js'
 
 const COLUMNAS_MARCA = ['id', 'expediente', 'clase_niza', 'denominacion', 'signo']
 const COLUMNAS_BOLETIN = ['id', 'fecha_publicacion', 'expediente', 'clase_niza', 'denominacion', 'signo', 'tramite']
@@ -178,7 +179,7 @@ export function encolarAlertasParaMarcas(db, marcaIds) {
             const nuevas = await generarAlertasParaMarcas(db, marcaIds)
             console.log(`Alertas: ${cantidad} marcas procesadas, ${nuevas} alertas nuevas, ${Math.round(performance.now() - inicio)} ms`)
         })
-        .catch((err) => console.error('No se pudieron generar alertas:', err?.code ?? '', err?.message))
+        .catch((err) => registrarError('Generación de alertas', err))
         // finally: se descuenta tanto si el trabajo salió bien como si falló.
         .finally(() => { marcasEnCola -= cantidad })
     return cola

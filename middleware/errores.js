@@ -1,3 +1,5 @@
+import { registrarError } from '../utils/log.js'
+
 // Respuestas para lo que no llega a ningún controlador.
 //
 // Sin esto, Express responde con su página HTML por defecto. Ante un JSON mal
@@ -26,7 +28,7 @@ export function manejarErrores(err, req, res, next) {
 
     // Cualquier otro error: al log va lo necesario para investigar, nunca
     // err.detail (Postgres pone ahí datos como emails). Al cliente, nada interno.
-    console.error(`Error en ${req.method} ${req.path}:`, err.code ?? '', err.message)
+    registrarError(`${req.method} ${req.path}`, err)
     const estado = Number.isInteger(err.status) && err.status >= 400 && err.status < 500 ? err.status : 500
     res.status(estado).json({ error: estado === 500 ? 'Error en el servidor.' : 'Pedido inválido.' })
 }

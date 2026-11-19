@@ -1,3 +1,5 @@
+import { registrarError } from '../utils/log.js'
+
 const COLUMNAS = [
     'id', 'fecha_publicacion', 'expediente', 'clase_niza', 'denominacion', 'signo',
     'titular', 'pais', 'agente', 'matricula', 'tramite', 'referencia',
@@ -14,7 +16,7 @@ export const handleGetBoletinMarcas = async (req, res, db) => {
             ])
         res.json(marcas)
     } catch (err) {
-        console.error(err)
+        registrarError('GET /boletines/marcas', err)
         res.status(500).json({ error: 'No se pudieron obtener las marcas del boletín.' })
     }
 }

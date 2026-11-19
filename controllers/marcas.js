@@ -1,3 +1,4 @@
+import { registrarError } from '../utils/log.js'
 import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
 import { encolarAlertasParaMarcas, hayLugarEnCola } from '../services/alertas.js'
 
@@ -56,7 +57,7 @@ export const handleGetMarcas = async (req, res, db) => {
             .orderBy('fecha_solicitud', 'desc')
         res.json(marcas)
     } catch (err) {
-        console.error(err)
+        registrarError('GET /marcas', err)
         res.status(500).json({ error: 'No se pudieron obtener las marcas.' })
     }
 }
@@ -87,7 +88,7 @@ export const handleCreateMarca = async (req, res, db) => {
         if (err.code === FOREIGN_KEY_VIOLATION) {
             return res.status(400).json({ error: 'El usuario no existe.' })
         }
-        console.error(err)
+        registrarError('POST /marcas', err)
         res.status(500).json({ error: 'No se pudo guardar la marca.' })
     }
 }
@@ -158,7 +159,7 @@ export const handleCreateMarcasBulk = async (req, res, db) => {
         if (err.code === FOREIGN_KEY_VIOLATION) {
             return res.status(400).json({ error: 'El usuario no existe.' })
         }
-        console.error(err)
+        registrarError('POST /marcas/bulk', err)
         res.status(500).json({ error: 'No se pudieron importar las marcas.' })
     }
 }

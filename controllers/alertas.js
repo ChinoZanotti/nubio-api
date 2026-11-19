@@ -1,3 +1,4 @@
+import { registrarError } from '../utils/log.js'
 import { hoy, venceOposicion, diasHabilesEntre } from '../utils/plazos.js'
 
 const ESTADOS = ['nueva', 'en_revision', 'a_oponer', 'descartada']
@@ -42,7 +43,7 @@ export const handleGetAlertas = async (req, res, db) => {
         })
         res.json(alertas)
     } catch (err) {
-        console.error(err)
+        registrarError('GET /alertas', err)
         res.status(500).json({ error: 'No se pudieron obtener las alertas.' })
     }
 }
@@ -87,7 +88,7 @@ export const handleUpdateAlerta = async (req, res, db) => {
         }
         res.json(actualizada)
     } catch (err) {
-        console.error(err)
+        registrarError('PATCH /alertas', err)
         res.status(500).json({ error: 'No se pudo actualizar la alerta.' })
     }
 }

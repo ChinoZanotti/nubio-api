@@ -1,4 +1,5 @@
 import { validarRegistro } from '../utils/authValidation.js'
+import { registrarError } from '../utils/log.js'
 
 // Costo de bcrypt: cada +1 duplica el tiempo de calcular el hash (y de probar
 // contraseñas por fuerza bruta si alguien se roba la tabla). 10 es el mínimo
@@ -36,7 +37,7 @@ export const handleRegister = async (req, res, db, bcrypt) => {
             console.error('Registro rechazado: email duplicado')
             return res.status(400).json({ error: 'No se pudo completar el registro.' })
         }
-        console.error('Error en registro:', err.code ?? err.message)
+        registrarError('POST /register', err)
         res.status(500).json({ error: 'No se pudo completar el registro.' })
     }
 }

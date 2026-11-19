@@ -134,7 +134,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 
 ## Convenciones importantes
 - Todas las rutas responden errores como `{ error: 'mensaje' }`. Cuando hay errores por campo, agregan `errores: { campo: mensaje }`.
-- No loguear `err.detail` de Postgres: ahí aparecen datos personales (por ejemplo el email en un unique violation). Loguear `err.code`.
+- Errores al log SIEMPRE con `registrarError(contexto, err)` (`utils/log.js`), nunca con `console.error(err)`. El objeto completo de `pg` trae `detail`, donde Postgres copia los datos de la fila: emails, titulares, `user_id`. El helper deja solo `code`, el nombre de la `constraint` y `message`. Tests en `tests/log.test.js`. Los scripts de `scripts/` pueden seguir usando `console.error(err)`: corren en la terminal del dueño, no en los logs de Render.
 - Códigos de error de Postgres que se manejan: 23505 (unique) → 409, 23503 (foreign key) → 400.
 - Headers de seguridad y CORS en `middleware/seguridad.js`. Orden en `server.js`: helmet → CORS → limitador general → `express.json`.
   - Helmet con la CSP más estricta (`default-src 'none'; frame-ancestors 'none'`), porque la API nunca sirve HTML. Además `X-Frame-Options: DENY`, HSTS y `nosniff`, y saca `X-Powered-By`.
@@ -154,14 +154,11 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1, N2, N4, N8, I1 e I2. Faltan:
-  - N3: quedan 8 `console.error(err)` que vuelcan el error completo de `pg` (con `detail`). Reemplazarlos por un helper que loguee solo `code` y `message`.
+- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1, N2, N3, N4, N7, N8, I1 e I2. Faltan:
   - N5: verificar en Render que `DATABASE_URL` no tenga `sslmode=no-verify` ni `disable`, porque pisan el `rejectUnauthorized` de `db.js`. Hacer que `probar-conexion` consulte `pg_stat_ssl` en vez de mirar solo el host.
   - N6: un segundo límite de `/signin` por email (con demora, no bloqueo duro, para que no sirva para bloquear la cuenta de otro).
   - N9: paginar `/boletines/marcas` o limitarlo por usuario.
-  - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
-  - Frontend (en `nubio`): N7, un 401 tardío puede borrar una sesión nueva (cerrar sesión solo si el token que falló es el vigente).
-- Seguridad, lo que queda de la primera revisión de Case (noviembre 2026):
+  - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).- Seguridad, lo que queda de la primera revisión de Case (noviembre 2026):
   - Rol de Postgres de mínimo privilegio para la app en Neon (solo SELECT/INSERT/UPDATE/DELETE sobre sus tablas). El owner se usa solo para correr los `sql/00X_*.sql`.
   - Historial de cambios de alertas (`alertas_historial`: quién, de qué estado a cuál, cuándo), en la misma transacción del PATCH. Importa porque las alertas sostienen decisiones legales con plazo.
   - Con los roles: `/register` solo para admin (hoy cualquiera puede crear una cuenta).
