@@ -4,23 +4,12 @@
 // ya existen quedan como están, con su estado y nota.
 // Uso: npm run recalcular-alertas
 import 'dotenv/config'
-import knex from 'knex'
-import pg from 'pg'
+import { crearDb } from '../db.js'
 import { generarAlertasParaBoletin } from '../services/alertas.js'
 
-// Igual que en server.js: las fechas como "aaaa-mm-dd" y no como Date de JS.
-pg.types.setTypeParser(1082, (valor) => valor)
-
 async function main() {
-    const db = knex({
-        client: 'pg',
-        connection: {
-            connectionString: process.env.DATABASE_URL,
-            ssl: process.env.DATABASE_URL?.includes('neon.tech')
-                ? { rejectUnauthorized: false }
-                : false,
-        },
-    })
+    // Misma conexión que el servidor (TLS verificado, fechas como texto).
+    const db = crearDb()
 
     try {
         const fechas = await db('boletin_marcas').distinct('fecha_publicacion').orderBy('fecha_publicacion')

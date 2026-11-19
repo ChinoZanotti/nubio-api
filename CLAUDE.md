@@ -12,7 +12,10 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 ## Base de datos: Postgres
 - Producción: Neon (free tier — 0.5GB, auto-suspende tras 5 min de inactividad).
 - Desarrollo local: Postgres local, base `nubio`.
-- La conexión SIEMPRE se arma a partir de `process.env.DATABASE_URL` (nunca hardcodear host/user/password — ya pasamos por ese bug en producción una vez). SSL se activa condicionalmente cuando la URL contiene `neon.tech`.
+- La conexión SIEMPRE se arma a partir de `process.env.DATABASE_URL` (nunca hardcodear host/user/password — ya pasamos por ese bug en producción una vez).
+- `db.js` (`crearDb()`) es la ÚNICA configuración de la conexión: la usan `server.js` y los scripts. No armar `knex({...})` a mano en otro lado. También fija el parser de DATE (ver abajo).
+- TLS hacia Neon (cuando la URL contiene `neon.tech`) con `rejectUnauthorized: true`: verifica el certificado y el host, no solo cifra. Si alguna vez falla con un error de certificado, no volver a poner `false`: investigar la causa.
+- `npm run probar-conexion` prueba la conexión con esa misma config. Contra Neon, sin tocar el `.env`: `DATABASE_URL="postgresql://...neon.tech/..." npm run probar-conexion` (en Git Bash).
 - Sintaxis SQL específica de Postgres (ej: `TRUNCATE TABLE nombre RESTART IDENTITY;`).
 - Cambios de esquema: se guardan como scripts numerados en `sql/` (`001_marcas.sql`, …) y se corren a mano en local y en el SQL Editor de Neon. Todavía no usamos migraciones de Knex.
 
@@ -63,10 +66,12 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - `encolarAlertasParaMarcas(db, ids)`: lo mismo, pero en segundo plano y en una fila que procesa los trabajos de a uno. La usa `/marcas/bulk`, que responde sin esperar (el frontend avisa que las alertas tardan unos minutos). La fila vive en memoria: si el servidor se reinicia a mitad de un trabajo, esas alertas se recuperan con `npm run recalcular-alertas`.
 - `npm run recalcular-alertas`: vuelve a correr el motor sobre todos los boletines (solo agrega). Usarlo después de ajustar el motor. Las alertas viejas que el motor nuevo ya no generaría NO se borran.
 - `npm test`: tests con `node:test` (sin dependencias).
+- `npm run dev`: servidor local con `--watch` (se reinicia al guardar). `npm start` es para producción (`node server.js`, sin `--watch`).
 
 ### Detalles en server.js
-- `pg.types.setTypeParser(1082, v => v)`: las columnas DATE se devuelven como string `"aaaa-mm-dd"` y no como `Date` de JS. Así se evitan corrimientos de día por zona horaria.
+- `pg.types.setTypeParser(1082, v => v)` (en `db.js`): las columnas DATE se devuelven como string `"aaaa-mm-dd"` y no como `Date` de JS. Así se evitan corrimientos de día por zona horaria.
 - `express.json({ limit: '1mb' })`: el default de 100kb no alcanzaba para importaciones grandes.
+- Al final de todas las rutas van `rutaNoEncontrada` (404 JSON) y `manejarErrores` (`middleware/errores.js`). JSON mal formado → 400, body de más de 1 MB → 413, cualquier otro → 500 genérico. La API responde siempre JSON y nunca manda stack traces, sea cual sea `NODE_ENV`. Antes, un JSON mal formado devolvía una página HTML con el stack completo.
 
 ## Autenticación (JWT)
 - `POST /signin` devuelve `{ token, user }`. El token es un JWT HS256 firmado con `JWT_SECRET`, con `sub` = id del usuario, que vence a las 8 horas (`utils/token.js`). El payload no está cifrado: no poner datos sensibles.
@@ -132,6 +137,8 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - `JWT_SECRET`.
   - `FRONTEND_URL`: uno o varios orígenes separados por coma, sin barra final. En local `http://localhost:5173`; en Render, la URL del Static Site.
   - Opcional: `TRUST_PROXY` (default 3).
+  - En Render también va `NODE_ENV=production`: Express y varias librerías apagan modos de depuración.
+- Dependencias: correr `npm audit` en los dos repos antes de cada deploy. `npm audit fix` sin `--force` solo sube versiones compatibles. En noviembre de 2026 quedó en 0 vulnerabilidades. El `xlsx` del frontend viene del CDN de SheetJS y `npm audit` no lo ve: seguir sus releases a mano.
 - Mensajes de commit: cortos, una línea, minúscula, sin punto final, en español.
 
 ## Pendiente (backlog activo)
@@ -139,8 +146,11 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, resto del plan de la revisión de Case (noviembre 2026), en orden:
-  - `rejectUnauthorized: true` hacia Neon, error handler central, `NODE_ENV=production` y `start` sin `--watch`.
+- Seguridad, lo que queda de la revisión de Case (noviembre 2026):
+  - Rol de Postgres de mínimo privilegio para la app en Neon (solo SELECT/INSERT/UPDATE/DELETE sobre sus tablas). El owner se usa solo para correr los `sql/00X_*.sql`.
+  - Historial de cambios de alertas (`alertas_historial`: quién, de qué estado a cuál, cuándo), en la misma transacción del PATCH. Importa porque las alertas sostienen decisiones legales con plazo.
+  - Con los roles: `/register` solo para admin (hoy cualquiera puede crear una cuenta).
+  - Subir el costo de bcrypt de 10 a 12 (`COSTO_BCRYPT`). Los hashes viejos siguen funcionando; los nuevos salen con 12.
   - Si hay dominio propio: pasar el token a cookie HttpOnly (hoy va en localStorage porque frontend y API están en subdominios distintos de onrender.com y Safari bloquea esas cookies).
 - Mantener sincronizadas las copias de validación (`utils/marcaValidation.js`, `utils/paises.js`, `utils/authValidation.js`) con el frontend.
 - Correr `sql/003_alertas.sql` en Neon antes de deployar el backend con alertas.

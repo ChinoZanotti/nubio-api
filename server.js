@@ -1,17 +1,15 @@
 import 'dotenv/config'
 import express from 'express'
 import bcrypt from 'bcrypt'
-import knex from 'knex'
+import { crearDb } from './db.js'
 import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleMe } from './controllers/me.js'
 import { requireAuth } from './middleware/requireAuth.js'
 import { limitadorLogin, limitadorRegistro, limitadorGeneral } from './middleware/rateLimit.js'
 import { corsNubio, helmetNubio } from './middleware/seguridad.js'
+import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
 import { verificarConfiguracion } from './utils/token.js'
-import pg from 'pg'
-
-// ...
 import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk } from './controllers/marcas.js'
 import { handleGetBoletinMarcas } from './controllers/boletines.js'
 import { handleGetAlertas, handleUpdateAlerta } from './controllers/alertas.js'
@@ -19,18 +17,8 @@ import { handleGetAlertas, handleUpdateAlerta } from './controllers/alertas.js'
 // Sin JWT_SECRET no se pueden firmar ni verificar tokens: cortamos al arrancar.
 verificarConfiguracion()
 
-// Postgres DATE (OID 1082) -> string "aaaa-mm-dd" tal cual, sin convertir a Date de JS.
-pg.types.setTypeParser(1082, (valor) => valor)
-
-const db = knex({
-  client: 'pg',
-  connection: {
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_URL?.includes('neon.tech')
-      ? { rejectUnauthorized: false }
-      : false,
-  },
-})
+// Conexión a Postgres: config compartida con los scripts (ver db.js).
+const db = crearDb()
 
 const app = express()
 
@@ -84,6 +72,10 @@ app.get('/boletines/marcas', requireAuth, (req, res) => handleGetBoletinMarcas(r
 // Alertas
 app.get('/alertas', requireAuth, (req, res) => handleGetAlertas(req, res, db))
 app.patch('/alertas/:id', requireAuth, (req, res) => handleUpdateAlerta(req, res, db))
+
+// --- Al final, siempre: lo que no atendió ninguna ruta ---
+app.use(rutaNoEncontrada)
+app.use(manejarErrores)
 
 const PORT = process.env.PORT || 3000
 

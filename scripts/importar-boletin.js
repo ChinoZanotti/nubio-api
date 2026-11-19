@@ -3,7 +3,7 @@
 // Usa DATABASE_URL del .env; para producción, correrlo con la URL de Neon.
 import 'dotenv/config'
 import { readFile } from 'node:fs/promises'
-import knex from 'knex'
+import { crearDb } from '../db.js'
 import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
 import { generarAlertasParaBoletin } from '../services/alertas.js'
 import { parsearLineaCsv } from '../utils/csv.js'
@@ -87,15 +87,8 @@ async function main() {
         else filas.push(resultado.fila)
     })
 
-    const db = knex({
-        client: 'pg',
-        connection: {
-            connectionString: process.env.DATABASE_URL,
-            ssl: process.env.DATABASE_URL?.includes('neon.tech')
-                ? { rejectUnauthorized: false }
-                : false,
-        },
-    })
+    // Misma conexión que el servidor (TLS verificado, fechas como texto).
+    const db = crearDb()
 
     try {
         const insertadas = filas.length === 0 ? [] : await db('boletin_marcas')
