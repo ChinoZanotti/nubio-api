@@ -16,7 +16,9 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - `db.js` (`crearDb()`) es la ÚNICA configuración de la conexión: la usan `server.js` y los scripts. No armar `knex({...})` a mano en otro lado. También fija el parser de DATE (ver abajo).
 - TLS hacia Neon (cuando el hostname termina en `neon.tech`) con `rejectUnauthorized: true`: verifica el certificado y el host, no solo cifra. Si alguna vez falla con un error de certificado, no volver a poner `false`: investigar la causa.
 - `sslmode` en la URL: `pg` deja que la URL pise el `ssl` de la config. `db.js` corta el arranque si una URL de Neon trae `sslmode=no-verify` o `disable`, y saca de la URL cualquier otro `sslmode` (como el `require` que trae Neon), así siempre manda nuestro `rejectUnauthorized: true`. Importa porque `pg` 9 va a cambiar `require` a "cifrar sin verificar"; con esto, actualizar `pg` no nos quita la verificación. Tests en `tests/db.test.js`.
-- `npm run probar-conexion` prueba la conexión con esa misma config y lo comprueba de verdad: `pg_stat_ssl` (Postgres dice si va cifrada) y `socket.authorized` (Node dice si verificó el certificado). Con Neon, si alguna de las dos falla, termina con error. Contra Neon, sin tocar el `.env`: `DATABASE_URL="postgresql://...neon.tech/..." npm run probar-conexion` (en Git Bash).
+- `npm run probar-conexion` prueba la conexión con esa misma config y lo comprueba de verdad, mirando el socket de Node: `encrypted` (va cifrada) y `authorized` (verificó el certificado y el host). Con Neon, si no está verificado, termina con error. También chequea que exista la intercalación `es-x-icu`.
+  - `pg_stat_ssl` se muestra solo como dato. La URL de producción usa el **pooler** de Neon (host `-pooler`, PgBouncer), y entonces Postgres informa SU conexión con el pooler, que es interna y va sin TLS, no la nuestra. Da "sin TLS" aunque nuestro tramo esté bien. Por eso no sirve para decidir.
+  - Contra Neon, sin tocar el `.env`: en Git Bash, `DATABASE_URL="postgresql://...neon.tech/..." npm run probar-conexion`. En PowerShell, `$env:DATABASE_URL = "..."`, después `npm run probar-conexion` y al final `Remove-Item Env:DATABASE_URL`, para no dejar la terminal apuntando a producción.
 - Sintaxis SQL específica de Postgres (ej: `TRUNCATE TABLE nombre RESTART IDENTITY;`).
 - Cambios de esquema: se guardan como scripts numerados en `sql/` (`001_marcas.sql`, …) y se corren a mano en local y en el SQL Editor de Neon. Todavía no usamos migraciones de Knex.
 
@@ -120,7 +122,12 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - Valida todo primero y hace un único INSERT con `ON CONFLICT DO NOTHING`. Las filas que no vuelven en `returning` se reportan como duplicadas.
 
 ### Boletines DINAPI (`controllers/boletines.js`)
-- `GET /boletines/marcas` — todas las marcas del boletín, ordenadas por `fecha_publicacion` desc y `expediente`. Sin paginar todavía (se filtra en el frontend).
+- `GET /boletines/marcas` — paginado: el servidor filtra, ordena y pagina. Antes devolvía las 13.000+ marcas (~3 MB) y filtraba el navegador; ahora son ~6 KB por página (hallazgo N9 de Case).
+  - Query: `pagina` (default 1), `porPagina` (1-100, default 20), `orden` (lista blanca `ORDEN`, default `fecha_publicacion`), `direccion` (`asc`|`desc`, default `desc`) y `filtros` (JSON `[{ campo, valor }]` o `[{ campo, desde, hasta }]` para fechas). Cualquier cosa fuera de las listas blancas da 400. `parsearConsulta` valida todo; tests en `tests/boletines.test.js`.
+  - Respuesta: `{ marcas, total, totalGeneral, opciones: { pais, tramite } }`. `total` es lo que cumple los filtros; `opciones`, los valores que existen para los desplegables.
+  - Los filtros replican `filtrarMarcas` del frontend. Texto: sin mayúsculas ni tildes (`translate()` + `lower()`, porque `unaccent` no está activada) y `%`/`_` escapados. Número: exacto. Opciones: igualdad. Fecha: rango. Se verificó contra la lógica del frontend en 10 combinaciones, con los mismos totales.
+  - `FILTROS` y `ORDEN` tienen que coincidir con `CAMPOS_FILTRO_BOLETIN` y las columnas de `BoletinesDinapi.jsx` del frontend.
+  - El orden de texto usa la intercalación ICU `es-x-icu`, las mismas reglas que `Intl.Collator('es')` del navegador. Se verificó en las 13.213 filas: 0 diferencias, salvo números dentro del texto ("cafe 10" antes que "cafe 9"); igualarlo requiere una intercalación propia (`es-u-kn-true`) creada con un SQL. `probar-conexion` avisa si falta `es-x-icu`. Vacíos al final y desempate por `id`, para que una fila no cambie de página entre pedidos.
 
 ### Alertas (`controllers/alertas.js`)
 - `GET /alertas` — filas planas: datos de la alerta, de mi marca (`mi_denominacion`, `mi_clase_niza`, `mi_expediente`) y de la marca del boletín (mismos nombres que en `/boletines/marcas`), más `vence_oposicion` y `dias_habiles_restantes` (negativo si venció). Orden: nuevas primero, después por score.
@@ -169,8 +176,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1 a N8, I1 e I2. Faltan:
-  - N9: paginar `/boletines/marcas` o limitarlo por usuario.
+- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1 a N9, I1 e I2. Falta:
   - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
 - Contraseñas, lo que falta de la política recomendada por Case (noviembre 2026), para cuando se hagan el cambio de contraseña, los roles y la invitación de usuarios:
   - Endpoint de cambio de contraseña con las mismas reglas + `revisarFiltrada`, verificando la actual.

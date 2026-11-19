@@ -23,21 +23,36 @@ try {
     console.log(`Conexión OK a "${rows[0].base}" en ${host}`)
     console.log(rows[0].version)
 
-    // 1) Lo que ve Postgres: ¿esta conexión va cifrada? ¿con qué versión de TLS?
-    const ssl = (await db.raw('select ssl, version, cipher from pg_stat_ssl where pid = pg_backend_pid()')).rows[0]
-    console.log(ssl?.ssl ? `Cifrado: sí (${ssl.version}, ${ssl.cipher})` : 'Cifrado: no')
-
-    // 2) Lo que ve Node: ¿el certificado del servidor quedó verificado?
-    // `authorized` es true solo si Node validó la cadena del certificado Y que
-    // corresponda al host. Si fuera false, la conexión estaría cifrada pero
-    // podría ser con un impostor.
+    // 1) Lo que ve NODE, en NUESTRO tramo (app -> servidor al que nos
+    // conectamos). Es lo que decide si la conexión es segura:
+    // - encrypted: el socket es TLS (cifrado);
+    // - authorized: Node validó la cadena del certificado Y que corresponda al
+    //   host. Si fuera false, iría cifrada pero podría ser con un impostor.
+    // getProtocol() da la versión de TLS (TLSv1.3...).
     const conexion = await db.client.acquireConnection()
     const socket = conexion.connection?.stream
-    const verificado = socket?.encrypted === true && socket.authorized === true
+    const cifrado = socket?.encrypted === true
+    const verificado = cifrado && socket.authorized === true
+    const protocolo = cifrado ? socket.getProtocol?.() : null
     await db.client.releaseConnection(conexion)
+    console.log(`Cifrado: ${cifrado ? `sí (${protocolo})` : 'no'}`)
     console.log(`Certificado verificado: ${verificado ? 'sí' : 'no'}`)
 
-    if (esNeon && !(ssl?.ssl && verificado)) {
+    // 2) Lo que ve POSTGRES (pg_stat_ssl), solo informativo. OJO: con el
+    // pooler de Neon (host "-pooler", PgBouncer) Postgres ve la conexión que
+    // tiene CON EL POOLER, dentro de la red de Neon, no la nuestra. Por eso
+    // puede decir "sin TLS" aunque nuestro tramo vaya cifrado y verificado.
+    const ssl = (await db.raw('select ssl, version from pg_stat_ssl where pid = pg_backend_pid()')).rows[0]
+    const viaPooler = host.includes('-pooler')
+    console.log(`(Postgres ve su conexión ${viaPooler ? 'con el pooler' : 'con nosotros'}: ${ssl?.ssl ? `TLS ${ssl.version}` : 'sin TLS'})`)
+
+    // 3) La intercalación ICU del español: la usa GET /boletines/marcas para
+    // ordenar texto. Si falta, ese endpoint respondería 500.
+    const icu = (await db.raw(`select 1 from pg_collation where collname = 'es-x-icu'`)).rows.length > 0
+    console.log(`Intercalación es-x-icu: ${icu ? 'sí' : 'NO (falta: /boletines/marcas va a fallar al ordenar)'}`)
+    if (!icu) process.exitCode = 1
+
+    if (esNeon && !verificado) {
         console.error('PROBLEMA: la conexión a Neon tiene que ir cifrada y con el certificado verificado.')
         process.exitCode = 1
     } else if (!esNeon) {
