@@ -34,13 +34,17 @@ const db = knex({
 
 const app = express()
 
-// En Render el pedido no llega directo: pasa por un proxy, y para Express la IP
-// de origen sería siempre la del proxy. Con esto Express toma la IP real del
-// header X-Forwarded-For, confiando en UN salto (el proxy de Render). Sin esto,
-// el rate limit trataría a todos los usuarios como una sola IP y bloquearía a todos juntos.
-// No usar `true`: confiaría en cualquier X-Forwarded-For, y el cliente puede
-// mandar uno inventado para cambiar de "IP" en cada pedido y saltarse el límite.
-app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 1))
+// En Render el pedido no llega directo. Medido en noviembre 2026:
+//   cliente → Cloudflare → balanceador de Render (10.x) → proxy local (::1) → Express
+// Cada proxy agrega a X-Forwarded-For la IP de quien le pasó el pedido. Express
+// recorre la lista de derecha a izquierda salteando tantos saltos como le digamos
+// que confíe: con 3 llega a la IP que escribió Cloudflare, la real del cliente.
+// Con 1 se quedaba en la del balanceador, igual para todos: el rate limit
+// bloqueaba a todos los usuarios juntos.
+// No usar `true` ni un número mayor: confiaría en IPs que puso el cliente, que
+// podría inventar una distinta en cada pedido y saltarse el límite.
+// Si Render cambia su infraestructura, volver a medir (ver CLAUDE.md).
+app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 3))
 
 app.use(cors())
 app.use(limitadorGeneral)
@@ -48,20 +52,6 @@ app.use(express.json({ limit: '1mb' }))
 
 app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'API funcionando' })
-})
-
-// TEMPORAL: diagnóstico de la cadena de proxies de Render para ajustar TRUST_PROXY.
-// Solo le devuelve a quien llama SUS PROPIOS datos de conexión. Borrar después de usarlo.
-app.get('/debug/ip', (req, res) => {
-    res.json({
-        ip_que_ve_express: req.ip,
-        trust_proxy: app.get('trust proxy'),
-        x_forwarded_for: req.headers['x-forwarded-for'] ?? null,
-        ip_del_socket: req.socket.remoteAddress,
-        cf_connecting_ip: req.headers['cf-connecting-ip'] ?? null,
-        true_client_ip: req.headers['true-client-ip'] ?? null,
-        x_real_ip: req.headers['x-real-ip'] ?? null,
-    })
 })
 
 // --- Rutas públicas (no piden token) ---

@@ -76,7 +76,8 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - `/register`: 5 cada hora.
   - Toda la API: 500 cada 15 min.
   - `cors()` va antes del limitador general, para que el 429 lleve headers CORS y el frontend pueda leer el mensaje.
-  - `app.set('trust proxy', 1)`: confía en un salto de proxy (Render) para leer la IP real de `X-Forwarded-For`. Configurable con la variable `TRUST_PROXY`. Nunca `true`: el cliente podría inventar IPs y saltarse el límite.
+  - `app.set('trust proxy', 3)`: en Render hay 3 proxies (Cloudflare → balanceador de Render → proxy local), medido en noviembre de 2026. Con 1, todos los usuarios compartían la IP del balanceador y el límite los bloqueaba a todos juntos. Se puede pisar con la variable `TRUST_PROXY`. Nunca `true` ni un número mayor: el cliente podría inventar IPs y saltarse el límite.
+  - Para volver a medir si Render cambia: endpoint temporal que devuelva `req.ip`, `x-forwarded-for` y `cf-connecting-ip`. `TRUST_PROXY` es la cantidad de IPs que hay a la derecha de la del cliente en `x-forwarded-for`, más 1 por el proxy local (socket `::1`). Comprobar que `req.ip` coincida con `cf-connecting-ip`. Borrar el endpoint después.
 - Tests: `tests/token.test.js` (token modificado, otro secreto, `alg: none`, vencido, middleware).
 
 ## Rutas existentes
