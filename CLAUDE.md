@@ -85,6 +85,12 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Públicas: `GET /`, `POST /signin`, `POST /register`. Todo lo demás está protegido.
 - Rate limiting (`middleware/rateLimit.js`, `express-rate-limit`, contadores en memoria). Responde 429 `{ error }`:
   - `/signin`: 10 intentos FALLIDOS cada 15 min por IP (los exitosos no cuentan).
+  - `/signin`, además, por CUENTA (`utils/intentosPorCuenta.js`, dentro del controlador): frena a quien reparte intentos entre muchas IPs contra un mismo email.
+    - Cuenta los fallos de la última hora por email, de cualquier IP. Los primeros 10 son libres; después hay que esperar 1, 2, 4… segundos entre intentos, con techo de 60 s, y si no se espera da 429 con `Retry-After`. Un login correcto borra el contador.
+    - Es demora y no bloqueo a propósito: un bloqueo serviría para dejar afuera a la víctima. Así el atacante queda en ~60 intentos por hora por cuenta, y la víctima espera como mucho un minuto.
+    - Cuenta también emails inexistentes, con el mismo mensaje, para no revelar qué cuentas existen.
+    - Se chequea antes de bcrypt (los intentos frenados no gastan CPU). Hasta 50.000 emails en memoria; los más viejos se descartan.
+    - Tests en `tests/intentosPorCuenta.test.js`.
   - `/register`: 5 cada hora por IP.
   - `/marcas/bulk`: 10 importaciones por hora por USUARIO (`keyGenerator` con `req.userId`). Va después de `requireAuth` en la ruta, porque necesita `req.userId`.
   - Toda la API: 500 cada 15 min por IP.
@@ -163,8 +169,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1, N2, N3, N4, N5, N7, N8, I1 e I2. Faltan:
-  - N6: un segundo límite de `/signin` por email (con demora, no bloqueo duro, para que no sirva para bloquear la cuenta de otro).
+- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1 a N8, I1 e I2. Faltan:
   - N9: paginar `/boletines/marcas` o limitarlo por usuario.
   - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
 - Contraseñas, lo que falta de la política recomendada por Case (noviembre 2026), para cuando se hagan el cambio de contraseña, los roles y la invitación de usuarios:

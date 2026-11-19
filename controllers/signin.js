@@ -2,6 +2,7 @@ import { firmarToken } from '../utils/token.js'
 import { normalizarEmail } from '../utils/authValidation.js'
 import { COSTO_BCRYPT } from './register.js'
 import { registrarError } from '../utils/log.js'
+import { esperaPendiente, registrarFallo, registrarExito } from '../utils/intentosPorCuenta.js'
 
 // Siempre el mismo mensaje: si dijéramos "ese email no existe", cualquiera
 // podría averiguar quién tiene cuenta.
@@ -20,6 +21,16 @@ export const handleSignin = async (req, res, db, bcrypt) => {
         return res.status(400).json(CREDENCIALES_INVALIDAS)
     }
 
+    // Límite por cuenta (utils/intentosPorCuenta.js): va ANTES de bcrypt, así
+    // los intentos frenados no gastan CPU. Aplica igual a emails que no existen.
+    const espera = esperaPendiente(email)
+    if (espera > 0) {
+        res.set('Retry-After', String(espera))
+        return res.status(429).json({
+            error: `Hubo muchos intentos fallidos con este correo. Esperá ${espera} ${espera === 1 ? 'segundo' : 'segundos'} y volvé a probar.`,
+        })
+    }
+
     try {
         const fila = await db('login').select('hash').where({ email }).first()
 
@@ -35,8 +46,10 @@ export const handleSignin = async (req, res, db, bcrypt) => {
         const valida = await bcrypt.compare(password, fila?.hash ?? hashDeRelleno)
 
         if (!fila || !valida) {
+            registrarFallo(email)
             return res.status(400).json(CREDENCIALES_INVALIDAS)
         }
+        registrarExito(email)
 
         // Hashes viejos (costo menor al actual): este es el único momento en que
         // tenemos la contraseña en texto, así que aprovechamos para recalcular
