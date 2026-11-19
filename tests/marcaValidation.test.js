@@ -40,3 +40,10 @@ test('el texto enorme del ataque (900.000 letras) se rechaza', () => {
 test('una figurativa sin denominación sigue siendo válida', () => {
     assert.deepEqual(validarMarca(normalizarMarca({ ...valida, signo: 'F', denominacion: '' })), {})
 })
+
+test('expediente: hasta 20 dígitos', () => {
+    assert.deepEqual(validarMarca(normalizarMarca({ ...valida, expediente: '9'.repeat(20) })), {})
+    assert.match(validarMarca(normalizarMarca({ ...valida, expediente: '9'.repeat(21) })).expediente, /hasta 20 dígitos/)
+    // el caso de la revisión: 100.000 dígitos
+    assert.ok(validarMarca(normalizarMarca({ ...valida, expediente: '9'.repeat(100_000) })).expediente)
+})

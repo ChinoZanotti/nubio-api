@@ -42,6 +42,14 @@ app.use(helmetNubio())
 app.use(corsNubio())
 app.use(limitadorGeneral)
 app.use(express.json({ limit: '1mb' }))
+// En Express 5, si el pedido no trae Content-Type: application/json, req.body
+// queda undefined y cualquier `req.body.algo` tira un TypeError (500). Con un
+// objeto vacío, los controladores validan como siempre y responden 400.
+// Va acá, para todas las rutas: así ninguna nueva puede olvidárselo.
+app.use((req, res, next) => {
+    req.body ??= {}
+    next()
+})
 
 app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'API funcionando' })

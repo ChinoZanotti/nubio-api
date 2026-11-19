@@ -73,6 +73,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 ### Detalles en server.js
 - `pg.types.setTypeParser(1082, v => v)` (en `db.js`): las columnas DATE se devuelven como string `"aaaa-mm-dd"` y no como `Date` de JS. Así se evitan corrimientos de día por zona horaria.
 - `express.json({ limit: '1mb' })`: el default de 100kb no alcanzaba para importaciones grandes.
+- Justo después de `express.json`, un middleware deja `req.body ??= {}`. En Express 5, un pedido sin `Content-Type: application/json` deja `req.body` en `undefined` y `req.body.algo` daba 500. Con el objeto vacío, los controladores validan y responden 400.
 - Al final de todas las rutas van `rutaNoEncontrada` (404 JSON) y `manejarErrores` (`middleware/errores.js`). JSON mal formado → 400, body de más de 1 MB → 413, cualquier otro → 500 genérico. La API responde siempre JSON y nunca manda stack traces, sea cual sea `NODE_ENV`. Antes, un JSON mal formado devolvía una página HTML con el stack completo.
 
 ## Autenticación (JWT)
@@ -128,6 +129,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 ## Validación de marcas
 - `utils/marcaValidation.js` y `utils/paises.js` son COPIAS de `src/utils/marcaValidation.js` y `src/config/paises.js` del frontend (repo `nubio`). Única diferencia: el import usa `./paises.js`, porque Node ESM exige la extensión. Si cambia una regla, hay que cambiarla en los dos repos.
 - `normalizarMarca` funciona también como whitelist de campos: el insert nunca recibe `req.body` directo, para evitar mass assignment.
+- Expediente: solo dígitos, hasta `LARGO_MAXIMO_EXPEDIENTE` = 20 (los reales tienen 7 a 10). Uno muy largo superaba el tamaño máximo del índice UNIQUE y hacía fallar la importación entera. CHECK en `sql/007_largo_maximo_expediente.sql`.
 - Topes de largo: `LARGO_MAXIMO_DENOMINACION` = 300 y `LARGO_MAXIMO_TITULAR` = 500. Los máximos reales en los boletines son 181 y 145. Protegen al motor de similitud: su costo es largo × largo, y sin tope un texto enorme congela el servidor. Están también como CHECK en `marcas` (`sql/005_largo_maximo_marcas.sql`), pero no en `boletin_marcas`, para no trabar la importación por un error de carga de DINAPI. Si cambian, hay que cambiarlos en los dos repos y en SQL. Tests en `tests/marcaValidation.test.js`.
 
 ## Convenciones importantes
@@ -152,16 +154,13 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, segunda revisión de Case (noviembre 2026). N1 (sin tope en la fila ni en las marcas) y N2 (`POST /marcas` fuera de la fila) quedaron resueltos. Faltan:
+- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1, N2, N4, N8, I1 e I2. Faltan:
   - N3: quedan 8 `console.error(err)` que vuelcan el error completo de `pg` (con `detail`). Reemplazarlos por un helper que loguee solo `code` y `message`.
-  - N4: el expediente no tiene largo máximo. Usar `/^\d{1,20}$/` en los dos repos y un CHECK en `sql/007`.
   - N5: verificar en Render que `DATABASE_URL` no tenga `sslmode=no-verify` ni `disable`, porque pisan el `rejectUnauthorized` de `db.js`. Hacer que `probar-conexion` consulte `pg_stat_ssl` en vez de mirar solo el host.
   - N6: un segundo límite de `/signin` por email (con demora, no bloqueo duro, para que no sirva para bloquear la cuenta de otro).
-  - N8: `req.body ?? {}` en los controladores, así un body que no es JSON da 400 y no 500.
   - N9: paginar `/boletines/marcas` o limitarlo por usuario.
-  - I2: `.gitignore` con `.env*` y `!.env.example`.
   - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
-  - Frontend (en `nubio`): N7, un 401 tardío puede borrar una sesión nueva (cerrar sesión solo si el token que falló es el vigente), e I1, "Guardar" en Perfil dice que guardó aunque no guarda nada.
+  - Frontend (en `nubio`): N7, un 401 tardío puede borrar una sesión nueva (cerrar sesión solo si el token que falló es el vigente).
 - Seguridad, lo que queda de la primera revisión de Case (noviembre 2026):
   - Rol de Postgres de mínimo privilegio para la app en Neon (solo SELECT/INSERT/UPDATE/DELETE sobre sus tablas). El owner se usa solo para correr los `sql/00X_*.sql`.
   - Historial de cambios de alertas (`alertas_historial`: quién, de qué estado a cuál, cuándo), en la misma transacción del PATCH. Importa porque las alertas sostienen decisiones legales con plazo.

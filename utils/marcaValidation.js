@@ -20,6 +20,10 @@ export const SIGNOS_SIN_TEXTO = ['F', 'T', 'S']
 // Los mismos números están como CHECK en la base (sql/005_largo_maximo_marcas.sql).
 export const LARGO_MAXIMO_DENOMINACION = 300
 export const LARGO_MAXIMO_TITULAR = 500
+// Los expedientes reales tienen 7 a 10 dígitos. Sin tope, uno de 100.000
+// dígitos supera el tamaño máximo del índice UNIQUE de Postgres y hace fallar
+// la importación entera. CHECK en sql/007_largo_maximo_expediente.sql.
+export const LARGO_MAXIMO_EXPEDIENTE = 20
 
 const CLASE_MIN = 1
 const CLASE_MAX = 45
@@ -99,6 +103,8 @@ export function validarMarca(marca) {
     errores.expediente = 'Ingresá el número de expediente.'
   } else if (!/^\d+$/.test(marca.expediente)) {
     errores.expediente = 'El expediente solo puede tener números.'
+  } else if (marca.expediente.length > LARGO_MAXIMO_EXPEDIENTE) {
+    errores.expediente = `El expediente puede tener hasta ${LARGO_MAXIMO_EXPEDIENTE} dígitos.`
   }
 
   if (marca.clase_niza === '') {

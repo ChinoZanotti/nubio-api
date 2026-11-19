@@ -1,4 +1,7 @@
 node_modules
-.env
+# Variables de entorno: .env y cualquier variante (.env.production, .env.neon...).
+# Tienen secretos (DATABASE_URL, JWT_SECRET). Solo se versiona el ejemplo, sin valores reales.
+.env*
+!.env.example
 *.log
 .DS_Store
