@@ -50,6 +50,20 @@ app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'API funcionando' })
 })
 
+// TEMPORAL: diagnóstico de la cadena de proxies de Render para ajustar TRUST_PROXY.
+// Solo le devuelve a quien llama SUS PROPIOS datos de conexión. Borrar después de usarlo.
+app.get('/debug/ip', (req, res) => {
+    res.json({
+        ip_que_ve_express: req.ip,
+        trust_proxy: app.get('trust proxy'),
+        x_forwarded_for: req.headers['x-forwarded-for'] ?? null,
+        ip_del_socket: req.socket.remoteAddress,
+        cf_connecting_ip: req.headers['cf-connecting-ip'] ?? null,
+        true_client_ip: req.headers['true-client-ip'] ?? null,
+        x_real_ip: req.headers['x-real-ip'] ?? null,
+    })
+})
+
 // --- Rutas públicas (no piden token) ---
 // El limitador va antes del handler: si la IP se pasó, responde 429 y no se
 // llega a correr bcrypt ni a tocar la base.
