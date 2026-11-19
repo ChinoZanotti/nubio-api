@@ -71,6 +71,12 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - `middleware/requireAuth.js` lee `Authorization: Bearer <token>`. Si es válido, pone `req.userId` y sigue. Si no, responde 401 `{ error }`.
 - **Regla:** toda ruta que maneje datos lleva `requireAuth`, y los controladores toman el usuario SOLO de `req.userId`. Nunca de `req.body.user_id` ni de `req.query.user_id`: si el cliente los manda, se ignoran.
 - Públicas: `GET /`, `POST /signin`, `POST /register`. Todo lo demás está protegido.
+- Rate limiting (`middleware/rateLimit.js`, `express-rate-limit`, por IP, contadores en memoria). Responde 429 `{ error }`:
+  - `/signin`: 10 intentos FALLIDOS cada 15 min (los exitosos no cuentan).
+  - `/register`: 5 cada hora.
+  - Toda la API: 500 cada 15 min.
+  - `cors()` va antes del limitador general, para que el 429 lleve headers CORS y el frontend pueda leer el mensaje.
+  - `app.set('trust proxy', 1)`: confía en un salto de proxy (Render) para leer la IP real de `X-Forwarded-For`. Configurable con la variable `TRUST_PROXY`. Nunca `true`: el cliente podría inventar IPs y saltarse el límite.
 - Tests: `tests/token.test.js` (token modificado, otro secreto, `alg: none`, vencido, middleware).
 
 ## Rutas existentes
@@ -115,7 +121,6 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Restringir CORS al dominio real del frontend.
 - Roles y permisos: admin vs usuario regular.
 - Seguridad, resto del plan de la revisión de Case (noviembre 2026), en orden:
-  - Rate limiting en `/signin` y `/register` (`express-rate-limit` + `app.set('trust proxy', 1)` por el proxy de Render).
   - Topes de largo en `denominacion`/`titular` (validación de los dos repos + CHECK en SQL), bajar el límite de `express.json` y sacar la generación de alertas del request: hoy un texto enorme bloquea Node.
   - Validar `/register` y `/signin` con un esquema (tipos, email normalizado, password 10-128).
   - `helmet()`, CORS restringido, `rejectUnauthorized: true` hacia Neon, error handler central, `NODE_ENV=production` y `start` sin `--watch`.

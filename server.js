@@ -7,6 +7,7 @@ import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleMe } from './controllers/me.js'
 import { requireAuth } from './middleware/requireAuth.js'
+import { limitadorLogin, limitadorRegistro, limitadorGeneral } from './middleware/rateLimit.js'
 import { verificarConfiguracion } from './utils/token.js'
 import pg from 'pg'
 
@@ -33,7 +34,16 @@ const db = knex({
 
 const app = express()
 
+// En Render el pedido no llega directo: pasa por un proxy, y para Express la IP
+// de origen sería siempre la del proxy. Con esto Express toma la IP real del
+// header X-Forwarded-For, confiando en UN salto (el proxy de Render). Sin esto,
+// el rate limit trataría a todos los usuarios como una sola IP y bloquearía a todos juntos.
+// No usar `true`: confiaría en cualquier X-Forwarded-For, y el cliente puede
+// mandar uno inventado para cambiar de "IP" en cada pedido y saltarse el límite.
+app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 1))
+
 app.use(cors())
+app.use(limitadorGeneral)
 app.use(express.json({ limit: '1mb' }))
 
 app.get('/', (req, res) => {
@@ -41,8 +51,10 @@ app.get('/', (req, res) => {
 })
 
 // --- Rutas públicas (no piden token) ---
-app.post('/signin', (req, res) => handleSignin(req, res, db, bcrypt));
-app.post('/register', (req, res) => handleRegister(req, res, db, bcrypt));
+// El limitador va antes del handler: si la IP se pasó, responde 429 y no se
+// llega a correr bcrypt ni a tocar la base.
+app.post('/signin', limitadorLogin, (req, res) => handleSignin(req, res, db, bcrypt));
+app.post('/register', limitadorRegistro, (req, res) => handleRegister(req, res, db, bcrypt));
 
 // --- Rutas protegidas ---
 // requireAuth va como segundo argumento: Express lo corre antes del handler.
