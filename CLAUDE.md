@@ -84,8 +84,8 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Tests: `tests/token.test.js` (token modificado, otro secreto, `alg: none`, vencido, middleware).
 
 ## Rutas existentes
-- `POST /register` — valida campos + longitud de contraseña (mínimo 10) → hashea con bcrypt → inserta en `login` y `users` en una transacción. No devuelve token: el usuario después inicia sesión.
-- `POST /signin` — busca email en `login`, compara hash con bcrypt, devuelve `{ token, user }` (user con columnas explícitas: id, name, email, joined).
+- `POST /register` — valida con `validarRegistro` → hashea con bcrypt (`COSTO_BCRYPT` = 10) → inserta en `login` y `users` en una transacción → 200 con el usuario. 400 `{ error, errores }` si no valida; 400 `{ error }` genérico si el email ya existe. No devuelve token: el usuario después inicia sesión.
+- `POST /signin` — normaliza el email, compara con bcrypt y devuelve `{ token, user }` (user con columnas explícitas: id, name, email, joined). Cualquier falla da 400 con el mismo mensaje (`Usuario o contraseña incorrectos.`). Si el email no existe, compara igual contra un hash de relleno, para que la respuesta tarde lo mismo y no se pueda averiguar qué emails están registrados midiendo tiempos. Medido: 167 ms en los dos casos.
 - `GET /me` — el usuario logueado (sale del token). Reemplazó a `GET /profile/:id`, que devolvía cualquier usuario por id.
 
 ### Marcas (`controllers/marcas.js`)
@@ -107,13 +107,21 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - `GET /alertas` — filas planas: datos de la alerta, de mi marca (`mi_denominacion`, `mi_clase_niza`, `mi_expediente`) y de la marca del boletín (mismos nombres que en `/boletines/marcas`), más `vence_oposicion` y `dias_habiles_restantes` (negativo si venció). Orden: nuevas primero, después por score.
 - `PATCH /alertas/:id` con `{ estado?, nota? }` — 200 `{ id, estado, nota }`; 400 si el estado es inválido o no hay cambios; 404 si la alerta no es de una marca del usuario.
 
+## Validación de registro e inicio de sesión
+- `utils/authValidation.js` es COPIA de `src/utils/authValidation.js` del frontend. Única diferencia: el comentario del encabezado.
+- Valida tipos: si llega algo que no es texto, se trata como vacío. Email: `trim().toLowerCase()`, formato `algo@algo.algo`, máximo 254. Nombre: 1-100 (la columna es `varchar(100)`). Contraseña: mínimo 10 caracteres y máximo 72 BYTES, porque bcrypt ignora en silencio lo que sigue (comprobado). La contraseña no se recorta.
+- En `/signin` NO se aplica el máximo de 72 bytes: quien se registró antes con una contraseña más larga sigue entrando, porque bcrypt la trunca igual al comparar.
+- Emails siempre en minúsculas: CHECK en `login` y `users` (`sql/006_emails_en_minusculas.sql`).
+- Tests en `tests/authValidation.test.js`. Incluyen signin con una base falsa en memoria.
+
 ## Validación de marcas
 - `utils/marcaValidation.js` y `utils/paises.js` son COPIAS de `src/utils/marcaValidation.js` y `src/config/paises.js` del frontend (repo `nubio`). Única diferencia: el import usa `./paises.js`, porque Node ESM exige la extensión. Si cambia una regla, hay que cambiarla en los dos repos.
 - `normalizarMarca` funciona también como whitelist de campos: el insert nunca recibe `req.body` directo, para evitar mass assignment.
 - Topes de largo: `LARGO_MAXIMO_DENOMINACION` = 300 y `LARGO_MAXIMO_TITULAR` = 500. Los máximos reales en los boletines son 181 y 145. Protegen al motor de similitud: su costo es largo × largo, y sin tope un texto enorme congela el servidor. Están también como CHECK en `marcas` (`sql/005_largo_maximo_marcas.sql`), pero no en `boletin_marcas`, para no trabar la importación por un error de carga de DINAPI. Si cambian, hay que cambiarlos en los dos repos y en SQL. Tests en `tests/marcaValidation.test.js`.
 
 ## Convenciones importantes
-- Las rutas de marcas responden errores como `{ error: 'mensaje' }`. `requireAuth` y `/me` también. Las rutas `/signin` y `/register` todavía devuelven strings sueltos; está pendiente unificarlas.
+- Todas las rutas responden errores como `{ error: 'mensaje' }`. Cuando hay errores por campo, agregan `errores: { campo: mensaje }`.
+- No loguear `err.detail` de Postgres: ahí aparecen datos personales (por ejemplo el email en un unique violation). Loguear `err.code`.
 - Códigos de error de Postgres que se manejan: 23505 (unique) → 409, 23503 (foreign key) → 400.
 - `cors()` está sin restricciones todavía — pendiente restringirlo al dominio real del frontend en Render.
 - Variables de entorno vía `.env` local (gitignoreado) + `dotenv/config`; en producción, Render las inyecta directo en el dashboard.
@@ -126,11 +134,10 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Restringir CORS al dominio real del frontend.
 - Roles y permisos: admin vs usuario regular.
 - Seguridad, resto del plan de la revisión de Case (noviembre 2026), en orden:
-  - Validar `/register` y `/signin` con un esquema (tipos, email normalizado, password 10-128).
+  - Correr `sql/006_emails_en_minusculas.sql` en Neon ANTES de deployar el backend con la validación nueva.
   - `helmet()`, CORS restringido, `rejectUnauthorized: true` hacia Neon, error handler central, `NODE_ENV=production` y `start` sin `--watch`.
   - Si hay dominio propio: pasar el token a cookie HttpOnly (hoy va en localStorage porque frontend y API están en subdominios distintos de onrender.com y Safari bloquea esas cookies).
-- Unificar el formato de errores de `/signin` y `/register` a `{ error }`.
-- Mantener sincronizadas las copias de validación (`utils/`) con el frontend.
+- Mantener sincronizadas las copias de validación (`utils/marcaValidation.js`, `utils/paises.js`, `utils/authValidation.js`) con el frontend.
 - Correr `sql/003_alertas.sql` en Neon antes de deployar el backend con alertas.
 - Validar con el abogado (el motor todavía no se probó con un especialista):
   - lista de clases relacionadas (`clasesRelacionadas.js`) y si la clase 35 se relaciona con todos los productos;

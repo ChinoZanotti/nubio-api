@@ -1,37 +1,42 @@
+import { validarRegistro } from '../utils/authValidation.js'
+
+// Costo de bcrypt: cada +1 duplica el tiempo de calcular el hash (y de probar
+// contraseñas por fuerza bruta si alguien se roba la tabla). 10 es el mínimo
+// razonable hoy. Tiene que ser el mismo que usa signin para el hash de relleno.
+export const COSTO_BCRYPT = 10
+
+const UNIQUE_VIOLATION = '23505'
+
 export const handleRegister = async (req, res, db, bcrypt) => {
-    const { email, name, password } = req.body
-    const saltRounds = 10
-
-    if (!email || !name || !password) {
-        return res.status(400).json('incorrect form submission')
+    // validarRegistro revisa tipos (que sean texto), normaliza el email a
+    // minúsculas y aplica las mismas reglas que el formulario del frontend.
+    const { datos, errores } = validarRegistro(req.body ?? {})
+    if (Object.keys(errores).length > 0) {
+        return res.status(400).json({ error: Object.values(errores)[0], errores })
     }
-
-    if (password.length < 10) {
-        return res.status(400).json('la contraseña debe tener al menos 10 caracteres')
-    }
+    const { name, email, password } = datos
 
     try {
-        const hash = await bcrypt.hash(password, saltRounds)
+        const hash = await bcrypt.hash(password, COSTO_BCRYPT)
 
-        const newUser = await db.transaction(async (trx) => {
-            const [loginEmail] = await trx('login')
-                .insert({ hash, email })
-                .returning('email')
-
-            const [user] = await trx('users')
-                .insert({
-                    email: loginEmail.email ?? loginEmail,
-                    name,
-                    joined: new Date(), 
-                })
-                .returning('*')
-
-            return user
+        const user = await db.transaction(async (trx) => {
+            await trx('login').insert({ hash, email })
+            const [nuevo] = await trx('users')
+                .insert({ email, name, joined: new Date() })
+                .returning(['id', 'name', 'email', 'joined'])
+            return nuevo
         })
 
-        res.json(newUser)
+        res.json(user)
     } catch (err) {
-        console.error(err)
-        res.status(400).json('unable to register')
-    }    
+        // Email ya registrado. Mensaje genérico y log sin err.detail: Postgres
+        // pone ahí el email ("Key (email)=(...) already exists") y no queremos
+        // datos personales en los logs.
+        if (err.code === UNIQUE_VIOLATION) {
+            console.error('Registro rechazado: email duplicado')
+            return res.status(400).json({ error: 'No se pudo completar el registro.' })
+        }
+        console.error('Error en registro:', err.code ?? err.message)
+        res.status(500).json({ error: 'No se pudo completar el registro.' })
+    }
 }
