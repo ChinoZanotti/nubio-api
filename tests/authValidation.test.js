@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import bcrypt from 'bcrypt'
-import { validarRegistro, normalizarEmail } from '../utils/authValidation.js'
+import { validarRegistro, validarPassword, contarCaracteres, normalizarEmail } from '../utils/authValidation.js'
 
 process.env.JWT_SECRET = 'secreto-de-prueba-con-mas-de-32-caracteres!!'
 const { handleSignin } = await import('../controllers/signin.js')
@@ -36,12 +36,38 @@ test('nombre de más de 100 caracteres se rechaza', () => {
     assert.equal(validarRegistro({ ...valido, name: 'A'.repeat(100) }).errores.name, undefined)
 })
 
-test('contraseña: mínimo 10 caracteres, máximo 72 bytes', () => {
-    assert.ok(validarRegistro({ ...valido, password: '123456789' }).errores.password)
-    assert.equal(validarRegistro({ ...valido, password: 'a'.repeat(72) }).errores.password, undefined)
-    assert.ok(validarRegistro({ ...valido, password: 'a'.repeat(73) }).errores.password)
+test('contraseña: mínimo 15 caracteres, máximo 72 bytes', () => {
+    assert.match(validarPassword('a'.repeat(14)), /Te falta 1 carácter/)
+    assert.match(validarPassword('a'.repeat(11)), /Te faltan 4 caracteres/)
+    assert.equal(validarPassword('a'.repeat(15)), null)
+    assert.equal(validarPassword('a'.repeat(72)), null)
+    assert.match(validarPassword('a'.repeat(73)), /demasiado larga/)
     // 37 "ñ" son 37 letras pero 74 bytes: bcrypt ignoraría el final
-    assert.ok(validarRegistro({ ...valido, password: 'ñ'.repeat(37) }).errores.password)
+    assert.match(validarPassword('ñ'.repeat(37)), /demasiado larga/)
+})
+
+test('se cuentan caracteres reales, no unidades UTF-16 (un emoji es 1)', () => {
+    assert.equal(contarCaracteres('😀'), 1)
+    assert.equal('😀'.length, 2) // por esto no alcanzaba con .length
+    // 14 letras + 1 emoji = 15 caracteres reales (aunque .length dé 16)
+    assert.equal(validarPassword('a'.repeat(14) + '😀'), null)
+    // 13 letras + 1 emoji = 14: con .length (15) habría pasado por error
+    assert.match(validarPassword('a'.repeat(13) + '😀'), /Te falta 1 carácter/)
+})
+
+test('rechaza contraseñas con el nombre, el correo o el nombre de la app', () => {
+    const usuario = { name: 'María José Pérez', email: 'mjperez@estudio.com' }
+    for (const password of [
+        'mi cuenta de NUBIO 2026',      // la app, en mayúsculas
+        'consultas en dinapi siempre',  // el otro término de la app
+        'la contraseña de mjperez!!',   // la parte del correo
+        'maria juega al fútbol',        // el nombre, escrito sin tilde
+        'el gato de PEREZ es negro',    // el apellido
+    ]) {
+        assert.match(validarPassword(password, usuario), /fácil de adivinar/, password)
+    }
+    // "José" tiene 4 letras y entra; "Ana" (3) no se busca: aparecería por casualidad
+    assert.equal(validarPassword('una banana en la ventana', { name: 'Ana' }), null)
 })
 
 test('normalizarEmail con algo que no es texto devuelve vacío', () => {
@@ -50,24 +76,44 @@ test('normalizarEmail con algo que no es texto devuelve vacío', () => {
 })
 
 // --- signin, con una "base" falsa en memoria ---
+// Costo 4 (no 12) para que los tests sean rápidos; además sirve para probar
+// que signin recalcula los hashes de costo menor.
 const hash = await bcrypt.hash('una-clave-larga', 4)
-function dbFalsa() {
-    const tablas = {
-        login: [{ email: 'ana@estudio.com', hash }],
-        users: [{ id: 7, name: 'Ana', email: 'ana@estudio.com', joined: '2026-01-01' }],
-    }
+function dbFalsa(tablas) {
     return (tabla) => ({
         select() { return this },
         where(filtro) { this.fila = tablas[tabla].find((f) => f.email === filtro.email); return this },
         first() { return Promise.resolve(this.fila) },
+        update(cambios) { Object.assign(this.fila, cambios); return Promise.resolve(1) },
     })
 }
-async function signin(body) {
+function tablasNuevas() {
+    return {
+        login: [{ email: 'ana@estudio.com', hash }],
+        users: [{ id: 7, name: 'Ana', email: 'ana@estudio.com', joined: '2026-01-01' }],
+    }
+}
+async function signin(body, tablas = tablasNuevas()) {
     const res = { status(c) { this.codigo = c; return this }, json(b) { this.cuerpo = b; return this } }
     res.codigo = 200
-    await handleSignin({ body }, res, dbFalsa(), bcrypt)
+    await handleSignin({ body }, res, dbFalsa(tablas), bcrypt)
     return res
 }
+
+test('signin recalcula con costo 12 un hash viejo de costo menor', async () => {
+    const tablas = tablasNuevas()
+    assert.equal(bcrypt.getRounds(tablas.login[0].hash), 4)
+    const res = await signin({ email: 'ana@estudio.com', password: 'una-clave-larga' }, tablas)
+    assert.equal(res.codigo, 200)
+    assert.equal(bcrypt.getRounds(tablas.login[0].hash), 12)
+    assert.ok(await bcrypt.compare('una-clave-larga', tablas.login[0].hash))
+})
+
+test('signin NO aplica la política nueva: una contraseña vieja de 11 caracteres sigue entrando', async () => {
+    const tablas = tablasNuevas()
+    tablas.login[0].hash = await bcrypt.hash('clave-vieja', 4)
+    assert.equal((await signin({ email: 'ana@estudio.com', password: 'clave-vieja' }, tablas)).codigo, 200)
+})
 
 test('signin acepta el email con mayúsculas y espacios', async () => {
     const res = await signin({ email: ' ANA@estudio.com ', password: 'una-clave-larga' })

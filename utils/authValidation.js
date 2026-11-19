@@ -6,7 +6,15 @@
 export const LARGO_MAXIMO_EMAIL = 254
 // La columna users.name es varchar(100).
 export const LARGO_MAXIMO_NOMBRE = 100
-export const LARGO_MINIMO_PASSWORD = 10
+// Política de contraseñas (noviembre 2026, recomendación de Case basada en
+// NIST SP 800-63B-4 y OWASP ASVS 5.0):
+// - mínimo 15 caracteres: NIST lo pide cuando la contraseña es el ÚNICO factor
+//   (sin 2FA), como hoy en Nubio. Con 2FA se podría bajar;
+// - sin reglas de composición (mayúscula, número, símbolo): NIST las prohíbe,
+//   porque producen "Marca2026!" y no contraseñas más difíciles;
+// - no puede incluir el nombre, el correo ni el nombre de la app;
+// - el backend además la rechaza si aparece en filtraciones (passwordFiltrada.js).
+export const LARGO_MINIMO_PASSWORD = 15
 // bcrypt usa solo los primeros 72 BYTES de la contraseña y el resto lo ignora
 // en silencio: "aaaa...a" (72) + "X" y + "Y" dan el mismo hash. En vez de dejar
 // que alguien crea que su contraseña larga lo protege, ponemos el límite a la vista.
@@ -38,13 +46,43 @@ export function validarEmail(email) {
   return null
 }
 
-export function validarPassword(password) {
+// Caracteres REALES, no unidades UTF-16: "hola😀".length da 6, pero son 5
+// caracteres. [...texto] separa por caracteres (puntos de código), como pide NIST.
+export const contarCaracteres = (texto) => [...texto].length
+
+// Palabras que hacen fácil de adivinar una contraseña PARA ESTA APP: el
+// atacante las prueba primero. NIST pide rechazar las "específicas del contexto".
+const PALABRAS_DE_LA_APP = ['nubio', 'dinapi']
+// Más cortas que esto no se buscan: "ana" o "luz" aparecerían por casualidad
+// dentro de muchas frases sin ser un problema.
+const LARGO_MINIMO_PALABRA_PERSONAL = 4
+
+// Minúsculas y sin tildes, para que "Núbio" o "MARÍA" también se detecten.
+const simplificar = (texto) => texto.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '')
+
+// Palabras personales: el nombre y la parte del correo antes de la @, también
+// partida en pedazos ("juan.perez" -> "juan.perez", "juan", "perez").
+function palabrasPersonales({ email = '', name = '' }) {
+  const local = simplificar(email.split('@')[0] ?? '')
+  const candidatas = [local, ...local.split(/[^\p{L}\p{N}]+/u), ...simplificar(name).split(/\s+/)]
+  return candidatas.filter((p) => p.length >= LARGO_MINIMO_PALABRA_PERSONAL)
+}
+
+// `usuario` es opcional ({ email, name }): sin él, solo se chequean las
+// palabras de la app.
+export function validarPassword(password, usuario = {}) {
   if (!password) return 'Ingresá una contraseña.'
-  if (password.length < LARGO_MINIMO_PASSWORD) {
-    return `La contraseña tiene que tener al menos ${LARGO_MINIMO_PASSWORD} caracteres.`
+  const largo = contarCaracteres(password)
+  if (largo < LARGO_MINIMO_PASSWORD) {
+    const faltan = LARGO_MINIMO_PASSWORD - largo
+    return `Te ${faltan === 1 ? 'falta 1 carácter' : `faltan ${faltan} caracteres`} (mínimo ${LARGO_MINIMO_PASSWORD}).`
   }
   if (bytes(password) > BYTES_MAXIMOS_PASSWORD) {
-    return `La contraseña puede tener hasta ${BYTES_MAXIMOS_PASSWORD} caracteres (las letras con tilde y la ñ cuentan doble).`
+    return `Es demasiado larga: el máximo es de ${BYTES_MAXIMOS_PASSWORD} caracteres (las letras con tilde y la ñ cuentan doble).`
+  }
+  const simple = simplificar(password)
+  if ([...PALABRAS_DE_LA_APP, ...palabrasPersonales(usuario)].some((p) => simple.includes(p))) {
+    return 'Es muy fácil de adivinar: incluye tu nombre, tu correo o el nombre de la app. Elegí otra.'
   }
   return null
 }
@@ -68,7 +106,7 @@ export function validarRegistro({ name, email, password }) {
   const errorEmail = validarEmail(datos.email)
   if (errorEmail) errores.email = errorEmail
 
-  const errorPassword = validarPassword(datos.password)
+  const errorPassword = validarPassword(datos.password, datos)
   if (errorPassword) errores.password = errorPassword
 
   return { datos, errores }

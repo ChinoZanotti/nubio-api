@@ -94,7 +94,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Tests: `tests/token.test.js` (token modificado, otro secreto, `alg: none`, vencido, middleware).
 
 ## Rutas existentes
-- `POST /register` — valida con `validarRegistro` → hashea con bcrypt (`COSTO_BCRYPT` = 10) → inserta en `login` y `users` en una transacción → 200 con el usuario. 400 `{ error, errores }` si no valida; 400 `{ error }` genérico si el email ya existe. No devuelve token: el usuario después inicia sesión.
+- `POST /register` — valida con `validarRegistro` → `revisarFiltrada` → hashea con bcrypt (`COSTO_BCRYPT` = 12) → inserta en `login` y `users` en una transacción → 200 con el usuario. 400 `{ error, errores }` si no valida; 400 `{ error }` genérico si el email ya existe. No devuelve token: el usuario después inicia sesión.
 - `POST /signin` — normaliza el email, compara con bcrypt y devuelve `{ token, user }` (user con columnas explícitas: id, name, email, joined). Cualquier falla da 400 con el mismo mensaje (`Usuario o contraseña incorrectos.`). Si el email no existe, compara igual contra un hash de relleno, para que la respuesta tarde lo mismo y no se pueda averiguar qué emails están registrados midiendo tiempos. Medido: 167 ms en los dos casos.
 - `GET /me` — el usuario logueado (sale del token). Reemplazó a `GET /profile/:id`, que devolvía cualquier usuario por id.
 
@@ -122,7 +122,15 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 
 ## Validación de registro e inicio de sesión
 - `utils/authValidation.js` es COPIA de `src/utils/authValidation.js` del frontend. Única diferencia: el comentario del encabezado.
-- Valida tipos: si llega algo que no es texto, se trata como vacío. Email: `trim().toLowerCase()`, formato `algo@algo.algo`, máximo 254. Nombre: 1-100 (la columna es `varchar(100)`). Contraseña: mínimo 10 caracteres y máximo 72 BYTES, porque bcrypt ignora en silencio lo que sigue (comprobado). La contraseña no se recorta.
+- Valida tipos: si llega algo que no es texto, se trata como vacío. Email: `trim().toLowerCase()`, formato `algo@algo.algo`, máximo 254. Nombre: 1-100 (la columna es `varchar(100)`). La contraseña no se recorta.
+- Política de contraseñas (noviembre 2026, recomendación de Case según NIST SP 800-63B-4 y OWASP ASVS 5.0):
+  - Mínimo 15 caracteres reales: se cuentan con `contarCaracteres` (`[...texto].length`), no con `.length`, porque un emoji son 2 unidades UTF-16. NIST pide 15 cuando la contraseña es el único factor. Si algún día hay 2FA, se puede revisar.
+  - Máximo 72 BYTES, porque bcrypt ignora en silencio lo que sigue (comprobado).
+  - Sin reglas de composición (mayúscula, número, símbolo): NIST las prohíbe. Sin vencimiento periódico.
+  - No puede contener `nubio`, `dinapi`, el nombre (palabras de 4+ letras) ni la parte del correo antes de la @. Se compara en minúsculas y sin tildes.
+  - En el registro, además, `revisarFiltrada` (`utils/passwordFiltrada.js`) la rechaza si aparece en filtraciones. Primero mira `data/passwords-comunes.txt` (~11.000 contraseñas filtradas de 15+ caracteres, de SecLists xato-net 1M, MIT). Después consulta Have I Been Pwned por k-anonimato: viajan solo 5 caracteres del SHA-1, con `Add-Padding` y timeout de 2 s. Si HIBP no responde, deja pasar con lo que dijo la lista local; un servicio caído no bloquea el alta. Los tests usan un `fetch` falso y no salen a internet.
+  - `/signin` NO aplica la política: quien tiene una contraseña vieja más corta sigue entrando. Los hashes de costo menor a `COSTO_BCRYPT` se recalculan en el login (es el único momento en que se tiene la contraseña). Mientras queden hashes de costo 10 sin migrar, un email existente responde algo más rápido que uno inexistente.
+  - Login con costo 12: ~500 ms medido en local.
 - En `/signin` NO se aplica el máximo de 72 bytes: quien se registró antes con una contraseña más larga sigue entrando, porque bcrypt la trunca igual al comparar.
 - Emails siempre en minúsculas: CHECK en `login` y `users` (`sql/006_emails_en_minusculas.sql`).
 - Tests en `tests/authValidation.test.js`. Incluyen signin con una base falsa en memoria.
@@ -158,11 +166,19 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1, N2, N3, N4, N5, N7, N8, I1 e I2. Faltan:
   - N6: un segundo límite de `/signin` por email (con demora, no bloqueo duro, para que no sirva para bloquear la cuenta de otro).
   - N9: paginar `/boletines/marcas` o limitarlo por usuario.
-  - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).- Seguridad, lo que queda de la primera revisión de Case (noviembre 2026):
+  - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
+- Contraseñas, lo que falta de la política recomendada por Case (noviembre 2026), para cuando se hagan el cambio de contraseña, los roles y la invitación de usuarios:
+  - Endpoint de cambio de contraseña con las mismas reglas + `revisarFiltrada`, verificando la actual.
+  - Cambio obligatorio para quien tenga una contraseña que no cumpla la política: en `/signin`, después de validar, marcar `debe_cambiar_password` (columna nueva) y dejar ir solo a la pantalla de cambio. No bloquear a nadie de golpe.
+  - Cuentas creadas por admin con link de invitación (token de un solo uso, guardado como hash, vence en 24-72 h): el admin nunca elige la contraseña de otro.
+  - Normalizar con `password.normalize('NFKC')` antes de hashear y comparar (en signin, probar normalizada y si falla la cruda, y re-hashear).
+  - Migrar a argon2id (OWASP: m=19 MiB, t=2, p=1) con re-hash en el login por prefijo del hash (`$2b$` = bcrypt). Con argon2, tope de bytes también en `/signin`.
+  - 2FA con TOTP: obligatorio para admin, recomendado para todos. Códigos de recuperación hasheados, secreto cifrado, rate limit en el paso del código.
+  - Frontend: botón para mostrar u ocultar la contraseña.
+- Seguridad, lo que queda de la primera revisión de Case (noviembre 2026):
   - Rol de Postgres de mínimo privilegio para la app en Neon (solo SELECT/INSERT/UPDATE/DELETE sobre sus tablas). El owner se usa solo para correr los `sql/00X_*.sql`.
   - Historial de cambios de alertas (`alertas_historial`: quién, de qué estado a cuál, cuándo), en la misma transacción del PATCH. Importa porque las alertas sostienen decisiones legales con plazo.
   - Con los roles: `/register` solo para admin (hoy cualquiera puede crear una cuenta).
-  - Subir el costo de bcrypt de 10 a 12 (`COSTO_BCRYPT`). Los hashes viejos siguen funcionando; los nuevos salen con 12.
   - Si hay dominio propio: pasar el token a cookie HttpOnly (hoy va en localStorage porque frontend y API están en subdominios distintos de onrender.com y Safari bloquea esas cookies).
 - Mantener sincronizadas las copias de validación (`utils/marcaValidation.js`, `utils/paises.js`, `utils/authValidation.js`) con el frontend.
 - Correr `sql/003_alertas.sql` en Neon antes de deployar el backend con alertas.

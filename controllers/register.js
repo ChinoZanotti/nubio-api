@@ -1,10 +1,13 @@
 import { validarRegistro } from '../utils/authValidation.js'
 import { registrarError } from '../utils/log.js'
+import { revisarFiltrada, MENSAJE_FILTRADA } from '../utils/passwordFiltrada.js'
 
 // Costo de bcrypt: cada +1 duplica el tiempo de calcular el hash (y de probar
-// contraseñas por fuerza bruta si alguien se roba la tabla). 10 es el mínimo
-// razonable hoy. Tiene que ser el mismo que usa signin para el hash de relleno.
-export const COSTO_BCRYPT = 10
+// contraseñas por fuerza bruta si alguien se roba la tabla). Pasó de 10 a 12
+// (4 veces más caro). Los hashes viejos de costo 10 siguen funcionando: signin
+// los vuelve a calcular con 12 la próxima vez que esa persona entra.
+// Tiene que ser el mismo que usa signin para el hash de relleno.
+export const COSTO_BCRYPT = 12
 
 const UNIQUE_VIOLATION = '23505'
 
@@ -18,6 +21,13 @@ export const handleRegister = async (req, res, db, bcrypt) => {
     const { name, email, password } = datos
 
     try {
+        // Después de las reglas síncronas: esta puede consultar un servicio
+        // externo (Have I Been Pwned), así que va solo si todo lo demás pasó.
+        const { filtrada } = await revisarFiltrada(password)
+        if (filtrada) {
+            return res.status(400).json({ error: MENSAJE_FILTRADA, errores: { password: MENSAJE_FILTRADA } })
+        }
+
         const hash = await bcrypt.hash(password, COSTO_BCRYPT)
 
         const user = await db.transaction(async (trx) => {
