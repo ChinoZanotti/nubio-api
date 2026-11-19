@@ -107,6 +107,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 ## Validación de marcas
 - `utils/marcaValidation.js` y `utils/paises.js` son COPIAS de `src/utils/marcaValidation.js` y `src/config/paises.js` del frontend (repo `nubio`). Única diferencia: el import usa `./paises.js`, porque Node ESM exige la extensión. Si cambia una regla, hay que cambiarla en los dos repos.
 - `normalizarMarca` funciona también como whitelist de campos: el insert nunca recibe `req.body` directo, para evitar mass assignment.
+- Topes de largo: `LARGO_MAXIMO_DENOMINACION` = 300 y `LARGO_MAXIMO_TITULAR` = 500. Los máximos reales en los boletines son 181 y 145. Protegen al motor de similitud: su costo es largo × largo, y sin tope un texto enorme congela el servidor. Están también como CHECK en `marcas` (`sql/005_largo_maximo_marcas.sql`), pero no en `boletin_marcas`, para no trabar la importación por un error de carga de DINAPI. Si cambian, hay que cambiarlos en los dos repos y en SQL. Tests en `tests/marcaValidation.test.js`.
 
 ## Convenciones importantes
 - Las rutas de marcas responden errores como `{ error: 'mensaje' }`. `requireAuth` y `/me` también. Las rutas `/signin` y `/register` todavía devuelven strings sueltos; está pendiente unificarlas.
@@ -122,7 +123,8 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Restringir CORS al dominio real del frontend.
 - Roles y permisos: admin vs usuario regular.
 - Seguridad, resto del plan de la revisión de Case (noviembre 2026), en orden:
-  - Topes de largo en `denominacion`/`titular` (validación de los dos repos + CHECK en SQL), bajar el límite de `express.json` y sacar la generación de alertas del request: hoy un texto enorme bloquea Node.
+  - Correr `sql/005_largo_maximo_marcas.sql` en Neon.
+  - Sacar la generación de alertas del request: un `/marcas/bulk` de 1000 marcas compara 1000 × miles de marcas del boletín de forma síncrona y bloquea la API para todos mientras dura.
   - Validar `/register` y `/signin` con un esquema (tipos, email normalizado, password 10-128).
   - `helmet()`, CORS restringido, `rejectUnauthorized: true` hacia Neon, error handler central, `NODE_ENV=production` y `start` sin `--watch`.
   - Si hay dominio propio: pasar el token a cookie HttpOnly (hoy va en localStorage porque frontend y API están en subdominios distintos de onrender.com y Safari bloquea esas cookies).

@@ -13,6 +13,14 @@ export const SIGNOS = {
 // Para el resto la denominación es obligatoria.
 export const SIGNOS_SIN_TEXTO = ['F', 'T', 'S']
 
+// Topes de largo. Los textos más largos de los boletines DINAPI miden 181
+// (denominación) y 145 (titular): hay margen de sobra para datos reales.
+// Sin tope, un texto enorme hace que el motor de similitud (que compara cada
+// marca contra miles del boletín, con costo largo × largo) congele el servidor.
+// Los mismos números están como CHECK en la base (sql/005_largo_maximo_marcas.sql).
+export const LARGO_MAXIMO_DENOMINACION = 300
+export const LARGO_MAXIMO_TITULAR = 500
+
 const CLASE_MIN = 1
 const CLASE_MAX = 45
 
@@ -110,10 +118,14 @@ export function validarMarca(marca) {
   // Figurativas, tridimensionales y sonoras pueden no tener texto.
   if (!marca.denominacion && !SIGNOS_SIN_TEXTO.includes(marca.signo)) {
     errores.denominacion = 'Ingresá la denominación.'
+  } else if (marca.denominacion.length > LARGO_MAXIMO_DENOMINACION) {
+    errores.denominacion = `La denominación puede tener hasta ${LARGO_MAXIMO_DENOMINACION} caracteres.`
   }
 
   if (!marca.titular) {
     errores.titular = 'Ingresá el titular.'
+  } else if (marca.titular.length > LARGO_MAXIMO_TITULAR) {
+    errores.titular = `El titular puede tener hasta ${LARGO_MAXIMO_TITULAR} caracteres.`
   }
 
   if (!CODIGOS_PAIS.includes(marca.pais)) {
