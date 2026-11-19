@@ -1,13 +1,13 @@
 import 'dotenv/config'
 import express from 'express'
 import bcrypt from 'bcrypt'
-import cors from 'cors'
 import knex from 'knex'
 import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleMe } from './controllers/me.js'
 import { requireAuth } from './middleware/requireAuth.js'
 import { limitadorLogin, limitadorRegistro, limitadorGeneral } from './middleware/rateLimit.js'
+import { corsNubio, helmetNubio } from './middleware/seguridad.js'
 import { verificarConfiguracion } from './utils/token.js'
 import pg from 'pg'
 
@@ -46,7 +46,12 @@ const app = express()
 // Si Render cambia su infraestructura, volver a medir (ver CLAUDE.md).
 app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 3))
 
-app.use(cors())
+// Orden: helmet primero (headers de seguridad en TODAS las respuestas, incluso
+// errores y 429), después CORS (antes del limitador, para que el 429 lleve el
+// header CORS y el frontend pueda leer el mensaje), después el limitador.
+// corsNubio() lee FRONTEND_URL y corta el arranque si no está.
+app.use(helmetNubio())
+app.use(corsNubio())
 app.use(limitadorGeneral)
 app.use(express.json({ limit: '1mb' }))
 

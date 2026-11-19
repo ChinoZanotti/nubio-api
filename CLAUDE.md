@@ -123,19 +123,24 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Todas las rutas responden errores como `{ error: 'mensaje' }`. Cuando hay errores por campo, agregan `errores: { campo: mensaje }`.
 - No loguear `err.detail` de Postgres: ahí aparecen datos personales (por ejemplo el email en un unique violation). Loguear `err.code`.
 - Códigos de error de Postgres que se manejan: 23505 (unique) → 409, 23503 (foreign key) → 400.
-- `cors()` está sin restricciones todavía — pendiente restringirlo al dominio real del frontend en Render.
-- Variables de entorno vía `.env` local (gitignoreado) + `dotenv/config`; en producción, Render las inyecta directo en el dashboard.
+- Headers de seguridad y CORS en `middleware/seguridad.js`. Orden en `server.js`: helmet → CORS → limitador general → `express.json`.
+  - Helmet con la CSP más estricta (`default-src 'none'; frame-ancestors 'none'`), porque la API nunca sirve HTML. Además `X-Frame-Options: DENY`, HSTS y `nosniff`, y saca `X-Powered-By`.
+  - CORS solo para los orígenes de `FRONTEND_URL`, con métodos GET/POST/PATCH, headers `Content-Type` y `Authorization`, sin credentials (el token va en un header, no en cookie) y preflight cacheado 10 min. Si se agrega un método (ej. DELETE) o un header, sumarlo acá o el navegador lo va a bloquear.
+  - CORS no frena a curl ni a scripts: protege al usuario dentro de su navegador. La protección de la API son `requireAuth` y el rate limit.
+- Variables de entorno vía `.env` local (gitignoreado) + `dotenv/config`; en producción, Render las inyecta directo en el dashboard. Obligatorias (el servidor no arranca sin ellas):
+  - `DATABASE_URL`.
+  - `JWT_SECRET`.
+  - `FRONTEND_URL`: uno o varios orígenes separados por coma, sin barra final. En local `http://localhost:5173`; en Render, la URL del Static Site.
+  - Opcional: `TRUST_PROXY` (default 3).
 - Mensajes de commit: cortos, una línea, minúscula, sin punto final, en español.
 
 ## Pendiente (backlog activo)
 - Agregar columna `avatar_url` a `users`.
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
-- Restringir CORS al dominio real del frontend.
 - Roles y permisos: admin vs usuario regular.
 - Seguridad, resto del plan de la revisión de Case (noviembre 2026), en orden:
-  - Correr `sql/006_emails_en_minusculas.sql` en Neon ANTES de deployar el backend con la validación nueva.
-  - `helmet()`, CORS restringido, `rejectUnauthorized: true` hacia Neon, error handler central, `NODE_ENV=production` y `start` sin `--watch`.
+  - `rejectUnauthorized: true` hacia Neon, error handler central, `NODE_ENV=production` y `start` sin `--watch`.
   - Si hay dominio propio: pasar el token a cookie HttpOnly (hoy va en localStorage porque frontend y API están en subdominios distintos de onrender.com y Safari bloquea esas cookies).
 - Mantener sincronizadas las copias de validación (`utils/marcaValidation.js`, `utils/paises.js`, `utils/authValidation.js`) con el frontend.
 - Correr `sql/003_alertas.sql` en Neon antes de deployar el backend con alertas.
