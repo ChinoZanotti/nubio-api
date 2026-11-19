@@ -3,7 +3,8 @@ import { hoy, venceOposicion, diasHabilesEntre } from '../utils/plazos.js'
 const ESTADOS = ['nueva', 'en_revision', 'a_oponer', 'descartada']
 const LARGO_MAXIMO_NOTA = 2000
 
-// Entero positivo o null. OJO: igual que en marcas, user_id llega del cliente hasta que haya JWT.
+// Entero positivo o null. Solo para el id de la alerta (viene en la URL):
+// el usuario sale de req.userId, que pone el middleware requireAuth.
 function parseId(valor) {
     const id = Number(valor)
     return Number.isInteger(id) && id > 0 ? id : null
@@ -18,10 +19,7 @@ const COLUMNAS = [
 ]
 
 export const handleGetAlertas = async (req, res, db) => {
-    const userId = parseId(req.query.user_id)
-    if (!userId) {
-        return res.status(400).json({ error: 'user_id inválido.' })
-    }
+    const { userId } = req
 
     try {
         const filas = await db('alertas as a')
@@ -46,9 +44,9 @@ export const handleGetAlertas = async (req, res, db) => {
 }
 
 export const handleUpdateAlerta = async (req, res, db) => {
-    const userId = parseId(req.body.user_id)
+    const { userId } = req
     const id = parseId(req.params.id)
-    if (!userId || !id) {
+    if (!id) {
         return res.status(400).json({ error: 'Parámetros inválidos.' })
     }
 

@@ -65,19 +65,27 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - `pg.types.setTypeParser(1082, v => v)`: las columnas DATE se devuelven como string `"aaaa-mm-dd"` y no como `Date` de JS. Así se evitan corrimientos de día por zona horaria.
 - `express.json({ limit: '1mb' })`: el default de 100kb no alcanzaba para importaciones grandes.
 
+## Autenticación (JWT)
+- `POST /signin` devuelve `{ token, user }`. El token es un JWT HS256 firmado con `JWT_SECRET`, con `sub` = id del usuario, que vence a las 8 horas (`utils/token.js`). El payload no está cifrado: no poner datos sensibles.
+- `JWT_SECRET` es obligatorio (mínimo 32 caracteres) y el servidor no arranca sin él. En local va en `.env`; en Render, en el dashboard, con un valor distinto. Generarlo con `node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"`. Cambiarlo invalida todas las sesiones abiertas.
+- `middleware/requireAuth.js` lee `Authorization: Bearer <token>`. Si es válido, pone `req.userId` y sigue. Si no, responde 401 `{ error }`.
+- **Regla:** toda ruta que maneje datos lleva `requireAuth`, y los controladores toman el usuario SOLO de `req.userId`. Nunca de `req.body.user_id` ni de `req.query.user_id`: si el cliente los manda, se ignoran.
+- Públicas: `GET /`, `POST /signin`, `POST /register`. Todo lo demás está protegido.
+- Tests: `tests/token.test.js` (token modificado, otro secreto, `alg: none`, vencido, middleware).
+
 ## Rutas existentes
-- `POST /register` — valida campos + longitud de contraseña (mínimo 10) → hashea con bcrypt → inserta en `login` y `users` en una transacción.
-- `POST /signin` — busca email en `login`, compara hash con bcrypt, devuelve el usuario de `users`.
-- `GET /profile/:id` — devuelve un usuario por id.
+- `POST /register` — valida campos + longitud de contraseña (mínimo 10) → hashea con bcrypt → inserta en `login` y `users` en una transacción. No devuelve token: el usuario después inicia sesión.
+- `POST /signin` — busca email en `login`, compara hash con bcrypt, devuelve `{ token, user }` (user con columnas explícitas: id, name, email, joined).
+- `GET /me` — el usuario logueado (sale del token). Reemplazó a `GET /profile/:id`, que devolvía cualquier usuario por id.
 
 ### Marcas (`controllers/marcas.js`)
-- `GET /marcas?user_id=X` — array de marcas del usuario, ordenadas por `fecha_solicitud` desc. 400 si `user_id` es inválido.
-- `POST /marcas` con `{ user_id, ...marca }`:
+- `GET /marcas` — array de marcas del usuario, ordenadas por `fecha_solicitud` desc.
+- `POST /marcas` con `{ ...marca }`:
   - 201 con la marca creada.
   - 400 `{ error, errores }` si no valida.
   - 409 si ya existe (mismo user_id + pais + expediente, código Postgres 23505).
   - 400 si el usuario no existe (23503).
-- `POST /marcas/bulk` con `{ user_id, marcas: [...] }`:
+- `POST /marcas/bulk` con `{ marcas: [...] }`:
   - Devuelve `{ insertadas: n, errores: [{ fila, error }] }`. `fila` es el índice (desde 0) en el array recibido; el frontend lo traduce a número de fila del archivo.
   - Máximo 1000 marcas por request.
   - Valida todo primero y hace un único INSERT con `ON CONFLICT DO NOTHING`. Las filas que no vuelven en `returning` se reportan como duplicadas.
@@ -86,15 +94,15 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - `GET /boletines/marcas` — todas las marcas del boletín, ordenadas por `fecha_publicacion` desc y `expediente`. Sin paginar todavía (se filtra en el frontend).
 
 ### Alertas (`controllers/alertas.js`)
-- `GET /alertas?user_id=X` — filas planas: datos de la alerta, de mi marca (`mi_denominacion`, `mi_clase_niza`, `mi_expediente`) y de la marca del boletín (mismos nombres que en `/boletines/marcas`), más `vence_oposicion` y `dias_habiles_restantes` (negativo si venció). Orden: nuevas primero, después por score.
-- `PATCH /alertas/:id` con `{ user_id, estado?, nota? }` — 200 `{ id, estado, nota }`; 400 si el estado es inválido o no hay cambios; 404 si la alerta no es de una marca del usuario.
+- `GET /alertas` — filas planas: datos de la alerta, de mi marca (`mi_denominacion`, `mi_clase_niza`, `mi_expediente`) y de la marca del boletín (mismos nombres que en `/boletines/marcas`), más `vence_oposicion` y `dias_habiles_restantes` (negativo si venció). Orden: nuevas primero, después por score.
+- `PATCH /alertas/:id` con `{ estado?, nota? }` — 200 `{ id, estado, nota }`; 400 si el estado es inválido o no hay cambios; 404 si la alerta no es de una marca del usuario.
 
 ## Validación de marcas
 - `utils/marcaValidation.js` y `utils/paises.js` son COPIAS de `src/utils/marcaValidation.js` y `src/config/paises.js` del frontend (repo `nubio`). Única diferencia: el import usa `./paises.js`, porque Node ESM exige la extensión. Si cambia una regla, hay que cambiarla en los dos repos.
 - `normalizarMarca` funciona también como whitelist de campos: el insert nunca recibe `req.body` directo, para evitar mass assignment.
 
 ## Convenciones importantes
-- Las rutas de marcas responden errores como `{ error: 'mensaje' }`. Las rutas de auth (`/signin`, `/register`, `/profile`) todavía devuelven strings sueltos; está pendiente unificarlas.
+- Las rutas de marcas responden errores como `{ error: 'mensaje' }`. `requireAuth` y `/me` también. Las rutas `/signin` y `/register` todavía devuelven strings sueltos; está pendiente unificarlas.
 - Códigos de error de Postgres que se manejan: 23505 (unique) → 409, 23503 (foreign key) → 400.
 - `cors()` está sin restricciones todavía — pendiente restringirlo al dominio real del frontend en Render.
 - Variables de entorno vía `.env` local (gitignoreado) + `dotenv/config`; en producción, Render las inyecta directo en el dashboard.
@@ -106,9 +114,13 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Restringir CORS al dominio real del frontend.
 - Roles y permisos: admin vs usuario regular.
-- Reemplazar el login basado en localStorage del frontend por JWT con expiración, validado server-side.
-- `user_id` viaja desde el cliente en las rutas de marcas, así que cualquiera puede leer o crear marcas de otro usuario. Se resuelve cuando entre JWT: sacar `user_id` del token verificado.
-- Unificar el formato de errores de `/signin`, `/register` y `/profile` a `{ error }`.
+- Seguridad, resto del plan de la revisión de Case (noviembre 2026), en orden:
+  - Rate limiting en `/signin` y `/register` (`express-rate-limit` + `app.set('trust proxy', 1)` por el proxy de Render).
+  - Topes de largo en `denominacion`/`titular` (validación de los dos repos + CHECK en SQL), bajar el límite de `express.json` y sacar la generación de alertas del request: hoy un texto enorme bloquea Node.
+  - Validar `/register` y `/signin` con un esquema (tipos, email normalizado, password 10-128).
+  - `helmet()`, CORS restringido, `rejectUnauthorized: true` hacia Neon, error handler central, `NODE_ENV=production` y `start` sin `--watch`.
+  - Si hay dominio propio: pasar el token a cookie HttpOnly (hoy va en localStorage porque frontend y API están en subdominios distintos de onrender.com y Safari bloquea esas cookies).
+- Unificar el formato de errores de `/signin` y `/register` a `{ error }`.
 - Mantener sincronizadas las copias de validación (`utils/`) con el frontend.
 - Correr `sql/003_alertas.sql` en Neon antes de deployar el backend con alertas.
 - Validar con el abogado (el motor todavía no se probó con un especialista):

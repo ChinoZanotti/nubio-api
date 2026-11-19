@@ -8,12 +8,8 @@ const COLUMNAS = ['id', 'fecha_solicitud', 'expediente', 'clase_niza', 'denomina
 const UNIQUE_VIOLATION = '23505'
 const FOREIGN_KEY_VIOLATION = '23503'
 
-// OJO: user_id llega del cliente porque todavía no hay token. Cualquiera puede
-// mandar el id de otro usuario. Se reemplaza cuando entre JWT.
-function parseUserId(valor) {
-    const id = Number(valor)
-    return Number.isInteger(id) && id > 0 ? id : null
-}
+// El usuario sale SIEMPRE de req.userId, que lo pone el middleware requireAuth
+// después de verificar el token. Si el body trae un user_id, se ignora.
 
 // Arma la fila a insertar. Usamos solo los campos que devuelve normalizarMarca,
 // así no se puede colar ninguna otra columna (ej: un "id" o "created_at" en el body).
@@ -33,10 +29,7 @@ async function generarAlertasSinFallar(db, marcaIds) {
 }
 
 export const handleGetMarcas = async (req, res, db) => {
-    const userId = parseUserId(req.query.user_id)
-    if (!userId) {
-        return res.status(400).json({ error: 'user_id inválido.' })
-    }
+    const { userId } = req
 
     try {
         const marcas = await db('marcas')
@@ -51,10 +44,7 @@ export const handleGetMarcas = async (req, res, db) => {
 }
 
 export const handleCreateMarca = async (req, res, db) => {
-    const userId = parseUserId(req.body.user_id)
-    if (!userId) {
-        return res.status(400).json({ error: 'user_id inválido.' })
-    }
+    const { userId } = req
 
     const marca = normalizarMarca(req.body)
     const errores = validarMarca(marca)
@@ -79,10 +69,7 @@ export const handleCreateMarca = async (req, res, db) => {
 }
 
 export const handleCreateMarcasBulk = async (req, res, db) => {
-    const userId = parseUserId(req.body.user_id)
-    if (!userId) {
-        return res.status(400).json({ error: 'user_id inválido.' })
-    }
+    const { userId } = req
 
     const { marcas } = req.body
     if (!Array.isArray(marcas) || marcas.length === 0) {

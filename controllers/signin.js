@@ -1,3 +1,5 @@
+import { firmarToken } from '../utils/token.js'
+
 export const handleSignin = async (req, res, db, bcrypt) => {
     const { email, password } = req.body
     if (!email || !password) {
@@ -19,12 +21,17 @@ export const handleSignin = async (req, res, db, bcrypt) => {
             return res.status(400).json('wrong credentials');
         }
 
-        const user = await db
-            .select('*')
-            .from('users')
-            .where('email', '=', email);
-        
-            res.json(user[0]);
+        // Columnas explícitas: con select('*') cualquier columna que se agregue
+        // a users en el futuro saldría sola hacia el cliente.
+        const user = await db('users')
+            .select('id', 'name', 'email', 'joined')
+            .where('email', '=', email)
+            .first();
+
+        // El token es la "credencial" que el frontend manda en cada pedido.
+        // Lo firma el servidor con JWT_SECRET: el cliente no lo puede fabricar
+        // ni cambiarle el id adentro sin que la firma deje de coincidir.
+        res.json({ token: firmarToken(user.id), user });
     } catch (err) {
         console.error(err);
         res.status(400).json('wrong credentials');
