@@ -62,8 +62,10 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - `services/alertas.js`: genera e inserta alertas. Excluye figurativas, renovaciones y el mismo expediente (la propia solicitud).
   - El motor cede el turno cada 20 ms (`setImmediate`) para no congelar la API: Node tiene un solo hilo. Inserta en tandas de 1000 (límite de parámetros de Postgres).
   - `generarAlertasParaBoletin(db, fecha)`: un boletín contra todas las marcas. Lo llama el importador.
-  - `generarAlertasParaMarcas(db, ids)`: marcas nuevas contra lo publicado con plazo abierto. `POST /marcas` la espera (una marca tarda menos de 1 s); si falla, se loguea y no rompe la creación.
-  - `encolarAlertasParaMarcas(db, ids)`: lo mismo, pero en segundo plano y en una fila que procesa los trabajos de a uno. La usa `/marcas/bulk`, que responde sin esperar (el frontend avisa que las alertas tardan unos minutos). La fila vive en memoria: si el servidor se reinicia a mitad de un trabajo, esas alertas se recuperan con `npm run recalcular-alertas`.
+  - `generarAlertasParaMarcas(db, ids)`: marcas nuevas contra lo publicado con plazo abierto. El servidor NUNCA la llama directo: siempre a través de la fila.
+  - `encolarAlertasParaMarcas(db, ids)`: la fila de trabajos en segundo plano. Procesa de a uno, así nunca hay dos motores ni dos copias de las publicaciones en memoria. La usan `POST /marcas` y `/marcas/bulk`, y ninguno espera: con la fila libre, las alertas de una marca están en menos de un segundo. La fila vive en memoria: si el servidor se reinicia a mitad de un trabajo, esas alertas se recuperan con `npm run recalcular-alertas`.
+  - Tope de la fila: `MAX_MARCAS_EN_COLA` = 5000 marcas pendientes (unos 13 min de CPU). Se cuenta en marcas y no en trabajos, porque uno de 1000 pesa 1000 veces más que uno de 1. Los controladores preguntan `hayLugarEnCola(n)` ANTES de insertar y, si no hay lugar, responden 503 con `Retry-After`. Así no quedan marcas guardadas sin alertas. Antes del tope, una cuenta podía encolar horas de CPU y las alertas de los demás no llegaban nunca (hallazgo N1 de la segunda revisión de Case).
+  - Caché de lo publicado en plazo, ya preparado (`publicadasEnPlazo`): traer y preparar las ~9000 publicaciones cuesta ~300 ms. La clave es día + id máximo + cantidad de `boletin_marcas` en la ventana: el importador corre en otro proceso y no puede avisar, así que cada trabajo compara la clave (una consulta barata). Medido: 367 ms el primer trabajo de una marca, 92 ms los siguientes.
 - `npm run recalcular-alertas`: vuelve a correr el motor sobre todos los boletines (solo agrega). Usarlo después de ajustar el motor. Las alertas viejas que el motor nuevo ya no generaría NO se borran.
 - `npm test`: tests con `node:test` (sin dependencias).
 - `npm run dev`: servidor local con `--watch` (se reinicia al guardar). `npm start` es para producción (`node server.js`, sin `--watch`).
@@ -79,10 +81,11 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - `middleware/requireAuth.js` lee `Authorization: Bearer <token>`. Si es válido, pone `req.userId` y sigue. Si no, responde 401 `{ error }`.
 - **Regla:** toda ruta que maneje datos lleva `requireAuth`, y los controladores toman el usuario SOLO de `req.userId`. Nunca de `req.body.user_id` ni de `req.query.user_id`: si el cliente los manda, se ignoran.
 - Públicas: `GET /`, `POST /signin`, `POST /register`. Todo lo demás está protegido.
-- Rate limiting (`middleware/rateLimit.js`, `express-rate-limit`, por IP, contadores en memoria). Responde 429 `{ error }`:
-  - `/signin`: 10 intentos FALLIDOS cada 15 min (los exitosos no cuentan).
-  - `/register`: 5 cada hora.
-  - Toda la API: 500 cada 15 min.
+- Rate limiting (`middleware/rateLimit.js`, `express-rate-limit`, contadores en memoria). Responde 429 `{ error }`:
+  - `/signin`: 10 intentos FALLIDOS cada 15 min por IP (los exitosos no cuentan).
+  - `/register`: 5 cada hora por IP.
+  - `/marcas/bulk`: 10 importaciones por hora por USUARIO (`keyGenerator` con `req.userId`). Va después de `requireAuth` en la ruta, porque necesita `req.userId`.
+  - Toda la API: 500 cada 15 min por IP.
   - `cors()` va antes del limitador general, para que el 429 lleve headers CORS y el frontend pueda leer el mensaje.
   - `app.set('trust proxy', 3)`: en Render hay 3 proxies (Cloudflare → balanceador de Render → proxy local), medido en noviembre de 2026. Con 1, todos los usuarios compartían la IP del balanceador y el límite los bloqueaba a todos juntos. Se puede pisar con la variable `TRUST_PROXY`. Nunca `true` ni un número mayor: el cliente podría inventar IPs y saltarse el límite.
   - Para volver a medir si Render cambia: endpoint temporal que devuelva `req.ip`, `x-forwarded-for` y `cf-connecting-ip`. `TRUST_PROXY` es la cantidad de IPs que hay a la derecha de la del cliente en `x-forwarded-for`, más 1 por el proxy local (socket `::1`). Comprobar que `req.ip` coincida con `cf-connecting-ip`. Borrar el endpoint después.
@@ -100,9 +103,12 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - 400 `{ error, errores }` si no valida.
   - 409 si ya existe (mismo user_id + pais + expediente, código Postgres 23505).
   - 400 si el usuario no existe (23503).
+  - 400 si pasaría el tope de marcas por usuario; 503 si la fila de alertas está llena (ver abajo).
 - `POST /marcas/bulk` con `{ marcas: [...] }`:
   - Devuelve `{ insertadas: n, errores: [{ fila, error }] }`. `fila` es el índice (desde 0) en el array recibido; el frontend lo traduce a número de fila del archivo.
   - Máximo 1000 marcas por request.
+  - 400 si pasaría el tope de marcas por usuario; 503 si la fila de alertas está llena; 429 después de 10 importaciones en una hora.
+- Tope de marcas por usuario: `MAX_MARCAS_POR_USUARIO` = 5000 (un `COUNT` antes de insertar). Protege la CPU del motor y el disco de Neon (0,5 GB). Si un cliente real necesita más, subirlo. Tests en `tests/capacidad.test.js`.
   - Valida todo primero y hace un único INSERT con `ON CONFLICT DO NOTHING`. Las filas que no vuelven en `returning` se reportan como duplicadas.
 
 ### Boletines DINAPI (`controllers/boletines.js`)
@@ -146,7 +152,17 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, lo que queda de la revisión de Case (noviembre 2026):
+- Seguridad, segunda revisión de Case (noviembre 2026). N1 (sin tope en la fila ni en las marcas) y N2 (`POST /marcas` fuera de la fila) quedaron resueltos. Faltan:
+  - N3: quedan 8 `console.error(err)` que vuelcan el error completo de `pg` (con `detail`). Reemplazarlos por un helper que loguee solo `code` y `message`.
+  - N4: el expediente no tiene largo máximo. Usar `/^\d{1,20}$/` en los dos repos y un CHECK en `sql/007`.
+  - N5: verificar en Render que `DATABASE_URL` no tenga `sslmode=no-verify` ni `disable`, porque pisan el `rejectUnauthorized` de `db.js`. Hacer que `probar-conexion` consulte `pg_stat_ssl` en vez de mirar solo el host.
+  - N6: un segundo límite de `/signin` por email (con demora, no bloqueo duro, para que no sirva para bloquear la cuenta de otro).
+  - N8: `req.body ?? {}` en los controladores, así un body que no es JSON da 400 y no 500.
+  - N9: paginar `/boletines/marcas` o limitarlo por usuario.
+  - I2: `.gitignore` con `.env*` y `!.env.example`.
+  - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
+  - Frontend (en `nubio`): N7, un 401 tardío puede borrar una sesión nueva (cerrar sesión solo si el token que falló es el vigente), e I1, "Guardar" en Perfil dice que guardó aunque no guarda nada.
+- Seguridad, lo que queda de la primera revisión de Case (noviembre 2026):
   - Rol de Postgres de mínimo privilegio para la app en Neon (solo SELECT/INSERT/UPDATE/DELETE sobre sus tablas). El owner se usa solo para correr los `sql/00X_*.sql`.
   - Historial de cambios de alertas (`alertas_historial`: quién, de qué estado a cuál, cuándo), en la misma transacción del PATCH. Importa porque las alertas sostienen decisiones legales con plazo.
   - Con los roles: `/register` solo para admin (hoy cualquiera puede crear una cuenta).

@@ -28,29 +28,41 @@ function esComparable(marca, publicada) {
 const TRAMO_MS = 20
 const cederTurno = () => new Promise((resolve) => setImmediate(resolve))
 
-async function generarPares(marcas, publicadas) {
-    // El chequeo es síncrono y el await va solo cuando toca ceder: un await en
-    // cada par (millones) sumaría segundos de espera inútil.
+// El chequeo es síncrono y el await va solo cuando toca ceder: un await en
+// cada par (millones) sumaría segundos de espera inútil.
+// Uso: `if (pausa.toca()) await pausa.ceder()` dentro de los bucles largos.
+function crearPausa() {
     let inicioTramo = performance.now()
-    const tramoCumplido = () => performance.now() - inicioTramo > TRAMO_MS
-    async function ceder() {
-        await cederTurno()
-        inicioTramo = performance.now()
+    return {
+        toca: () => performance.now() - inicioTramo > TRAMO_MS,
+        async ceder() {
+            await cederTurno()
+            inicioTramo = performance.now()
+        },
     }
+}
 
-    // Cada marca del boletín se prepara (normaliza + claves fonéticas) UNA vez,
-    // no en cada par. Son miles: también se cede el turno mientras se preparan.
+// Cada marca del boletín se prepara (normaliza + claves fonéticas) UNA vez,
+// no en cada par. Son miles: también se cede el turno mientras se preparan.
+async function prepararTodas(publicadas, pausa) {
     const preparadas = new Map()
     for (const publicada of publicadas) {
-        if (tramoCumplido()) await ceder()
+        if (pausa.toca()) await pausa.ceder()
         preparadas.set(publicada, prepararMarca(publicada))
     }
+    return preparadas
+}
+
+// `preparadas` es opcional: si ya vienen preparadas (del caché), se reusan.
+async function generarPares(marcas, publicadas, preparadas = null) {
+    const pausa = crearPausa()
+    preparadas ??= await prepararTodas(publicadas, pausa)
 
     const filas = []
     for (const marca of marcas) {
         const mia = prepararMarca(marca)
         for (const publicada of publicadas) {
-            if (tramoCumplido()) await ceder()
+            if (pausa.toca()) await pausa.ceder()
             if (!esComparable(marca, publicada)) continue
             const r = compararPreparadas(mia, preparadas.get(publicada))
             if (r.score < UMBRAL_ALERTA) continue
@@ -93,34 +105,81 @@ export async function generarAlertasParaBoletin(db, fechaPublicacion) {
     return insertar(db, await generarPares(marcas, publicadas))
 }
 
-// Una marca nueva de un usuario se compara solo contra lo publicado que todavía
-// se puede oponer: lo que ya venció no es accionable.
+// Caché de lo publicado con plazo abierto, ya preparado. Traer y preparar las
+// ~9000 publicaciones cuesta unos 300 ms: más que comparar una marca sola. Sin
+// caché se repetía en cada trabajo; con caché, una vez por día o por boletín.
+//
+// La clave cambia si cambia el día (algunas publicaciones dejan de estar en
+// plazo) o si entra o sale un boletín (cambia el id máximo o la cantidad). El
+// importador corre en otro proceso y no puede avisarle al servidor: por eso se
+// compara la clave, que es una consulta barata, en cada trabajo.
+//
+// Hay una sola copia en memoria, y los trabajos corren de a uno (ver la fila):
+// nunca hay dos preparándola a la vez.
+let cachePublicadas = null
+
+async function publicadasEnPlazo(db) {
+    const hoyPy = hoy()
+    const desde = new Date(Date.now() - DIAS_CORRIDOS_PREFILTRO * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    const resumen = await db('boletin_marcas')
+        .where('fecha_publicacion', '>=', desde)
+        .max('id as maximo')
+        .count('* as cantidad')
+        .first()
+    const clave = `${hoyPy}|${desde}|${resumen.maximo}|${resumen.cantidad}`
+    if (cachePublicadas?.clave === clave) return cachePublicadas
+
+    // Lo que ya venció no es accionable: no se compara.
+    const publicadas = (await db('boletin_marcas').select(COLUMNAS_BOLETIN).where('fecha_publicacion', '>=', desde))
+        .filter((p) => venceOposicion(p.fecha_publicacion) >= hoyPy)
+    const preparadas = await prepararTodas(publicadas, crearPausa())
+    cachePublicadas = { clave, publicadas, preparadas }
+    return cachePublicadas
+}
+
+// Marcas nuevas de un usuario contra lo publicado que todavía se puede oponer.
+// Desde el servidor se llama SIEMPRE a través de la fila (encolarAlertasParaMarcas).
 export async function generarAlertasParaMarcas(db, marcaIds) {
     if (marcaIds.length === 0) return 0
     const marcas = await db('marcas').select(COLUMNAS_MARCA).whereIn('id', marcaIds)
-    const desde = new Date(Date.now() - DIAS_CORRIDOS_PREFILTRO * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-    const hoyPy = hoy()
-    const publicadas = (await db('boletin_marcas').select(COLUMNAS_BOLETIN).where('fecha_publicacion', '>=', desde))
-        .filter((p) => venceOposicion(p.fecha_publicacion) >= hoyPy)
-    return insertar(db, await generarPares(marcas, publicadas))
+    const { publicadas, preparadas } = await publicadasEnPlazo(db)
+    return insertar(db, await generarPares(marcas, publicadas, preparadas))
 }
 
-// Fila de trabajos en segundo plano: las generaciones encoladas corren de a UNA.
-// Si llegan diez importaciones juntas, no compiten por la CPU: esperan su turno.
+// Fila de trabajos en segundo plano: las generaciones corren de a UNA.
+// Si llegan diez importaciones juntas, no compiten por la CPU ni cargan diez
+// copias de las publicaciones en memoria: esperan su turno.
 // `cola` es siempre la promesa del último trabajo; cada uno nuevo se engancha atrás.
+//
+// Tiene TOPE: sin él, cualquiera con una cuenta podía encolar importaciones
+// sin fin (horas de CPU) y las alertas de los demás no llegaban nunca. Se cuenta
+// en marcas, no en trabajos, porque un trabajo de 1000 marcas pesa 1000 veces
+// más que uno de 1. 5000 marcas son unos 13 minutos de CPU (~155 ms cada una).
+// Los controladores preguntan hayLugarEnCola ANTES de insertar: si no hay
+// lugar, responden 503 y no quedan marcas guardadas sin alertas.
 //
 // Vive en memoria: si el servidor se reinicia a mitad de camino, esas alertas no
 // se generan. `npm run recalcular-alertas` las recupera (compara cada boletín
 // contra todas las marcas).
+export const MAX_MARCAS_EN_COLA = 5000
 let cola = Promise.resolve()
+let marcasEnCola = 0
+
+export function hayLugarEnCola(cantidad) {
+    return marcasEnCola + cantidad <= MAX_MARCAS_EN_COLA
+}
 
 export function encolarAlertasParaMarcas(db, marcaIds) {
+    const cantidad = marcaIds.length
+    marcasEnCola += cantidad
     cola = cola
         .then(async () => {
             const inicio = performance.now()
             const nuevas = await generarAlertasParaMarcas(db, marcaIds)
-            console.log(`Alertas: ${marcaIds.length} marcas procesadas, ${nuevas} alertas nuevas, ${Math.round(performance.now() - inicio)} ms`)
+            console.log(`Alertas: ${cantidad} marcas procesadas, ${nuevas} alertas nuevas, ${Math.round(performance.now() - inicio)} ms`)
         })
-        .catch((err) => console.error('No se pudieron generar alertas:', err))
+        .catch((err) => console.error('No se pudieron generar alertas:', err?.code ?? '', err?.message))
+        // finally: se descuenta tanto si el trabajo salió bien como si falló.
+        .finally(() => { marcasEnCola -= cantidad })
     return cola
 }

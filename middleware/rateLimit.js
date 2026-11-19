@@ -38,6 +38,18 @@ export const limitadorRegistro = limitador({
     message: { error: 'Demasiados registros desde esta conexión. Probá de nuevo en una hora.' },
 })
 
+// Importaciones: por USUARIO, no por IP. Cada importación encola hasta 1000
+// marcas para el motor; con el límite por IP, alguien con varias cuentas o
+// varias IPs podía mandar cientos por hora. 10 por hora alcanza para un uso
+// real (cargar la cartera en varios archivos) y frena el abuso.
+// Tiene que ir DESPUÉS de requireAuth en la ruta: usa req.userId.
+export const limitadorImportacion = limitador({
+    windowMs: UNA_HORA,
+    limit: 10,
+    keyGenerator: (req) => `usuario:${req.userId}`,
+    message: { error: 'Hiciste muchas importaciones en poco tiempo. Probá de nuevo en una hora.' },
+})
+
 // General: un techo amplio para toda la API, contra scripts que martillan
 // cualquier ruta (por ejemplo /boletines/marcas, que es pesada).
 // 500 cada 15 minutos son ~33 por minuto: un uso normal no se acerca, ni
