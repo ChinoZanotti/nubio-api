@@ -1,23 +1,37 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hayLugarEnCola, encolarAlertasParaMarcas, MAX_MARCAS_EN_COLA } from '../services/alertas.js'
+import {
+    faltaLugarEnCola, encolarAlertasParaMarcas, MAX_MARCAS_EN_COLA, MAX_MARCAS_EN_COLA_POR_USUARIO,
+} from '../services/alertas.js'
 import { handleCreateMarcasBulk, MAX_MARCAS_POR_USUARIO } from '../controllers/marcas.js'
 
-test('la fila de alertas tiene tope y libera el lugar al terminar (aunque el trabajo falle)', async (t) => {
+// Una "base" que explota: el trabajo falla, pero el lugar se tiene que liberar igual.
+const dbQueFalla = () => { throw new Error('base caída') }
+const ids = (n, desde = 1) => Array.from({ length: n }, (_, i) => desde + i)
+
+test('la fila tiene tope global y libera el lugar al terminar (aunque el trabajo falle)', async (t) => {
     t.mock.method(console, 'error', () => {}) // el trabajo falla a propósito: no ensuciar la salida
-    assert.equal(hayLugarEnCola(MAX_MARCAS_EN_COLA), true)
-    assert.equal(hayLugarEnCola(MAX_MARCAS_EN_COLA + 1), false)
+    assert.equal(faltaLugarEnCola(1, MAX_MARCAS_EN_COLA_POR_USUARIO), null)
 
-    // Una "base" que explota: el trabajo falla, pero el lugar se tiene que liberar igual.
-    const dbQueFalla = () => { throw new Error('base caída') }
-    const ids = Array.from({ length: 3000 }, (_, i) => i + 1)
-    const trabajo = encolarAlertasParaMarcas(dbQueFalla, ids)
+    // 5 usuarios distintos llenan las 5000 plazas, 1000 cada uno
+    const trabajos = [1, 2, 3, 4, 5].map((u) => encolarAlertasParaMarcas(dbQueFalla, ids(1000), u))
+    assert.equal(faltaLugarEnCola(6, 1), 'servidor')
 
-    assert.equal(hayLugarEnCola(MAX_MARCAS_EN_COLA - 3000), true)
-    assert.equal(hayLugarEnCola(MAX_MARCAS_EN_COLA - 3000 + 1), false)
+    await Promise.all(trabajos)
+    assert.equal(faltaLugarEnCola(6, MAX_MARCAS_EN_COLA_POR_USUARIO), null)
+})
+
+test('M4: una sola cuenta no puede ocupar toda la fila', async (t) => {
+    t.mock.method(console, 'error', () => {})
+    const trabajo = encolarAlertasParaMarcas(dbQueFalla, ids(MAX_MARCAS_EN_COLA_POR_USUARIO), 7)
+    // la misma cuenta no puede encolar ni una marca más hasta que termine...
+    assert.equal(faltaLugarEnCola(7, 1), 'usuario')
+    // ...pero las demás sí, porque la fila sigue con lugar
+    assert.equal(faltaLugarEnCola(8, 1000), null)
+    assert.ok(MAX_MARCAS_EN_COLA > MAX_MARCAS_EN_COLA_POR_USUARIO)
 
     await trabajo
-    assert.equal(hayLugarEnCola(MAX_MARCAS_EN_COLA), true)
+    assert.equal(faltaLugarEnCola(7, MAX_MARCAS_EN_COLA_POR_USUARIO), null)
 })
 
 // Base falsa mínima: solo lo que usa verificarCapacidad (el COUNT de marcas del usuario).

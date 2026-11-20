@@ -32,3 +32,12 @@ test('describirError aguanta errores raros', () => {
     assert.equal(describirError(null), 'error desconocido')
     assert.equal(describirError('texto suelto'), 'texto suelto')
 })
+
+test('errores de tipo de dato (22xxx): se omite el mensaje, que trae el valor rechazado', () => {
+    const err = new Error('update "marcas" set "clase_niza" = $1 - el valor «99999» está fuera de rango para el tipo smallint')
+    err.code = '22003'
+    const texto = describirError(err)
+    assert.match(texto, /code=22003/)
+    assert.doesNotMatch(texto, /99999/)
+})
+

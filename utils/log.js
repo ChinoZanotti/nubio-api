@@ -10,14 +10,25 @@
 // Esto deja lo que sirve para investigar sin exponer a nadie:
 // - code: el código de Postgres (23505 = unique, 23514 = check, ...);
 // - constraint: el NOMBRE de la restricción que falló (no los valores);
-// - message: el texto del error. En los errores de Postgres no trae los datos
-//   de la fila (eso está en `detail`).
+// - message: el texto del error. Knex le antepone la consulta, pero con
+//   $1, $2... y SIN los valores (verificado con pg). En casi todos los errores
+//   de Postgres el mensaje tampoco trae datos (esos van en `detail`).
+//
+// Excepción (tercera revisión de Case, M1): los errores de TIPO DE DATO
+// (códigos 22xxx: fecha inválida, número fuera de rango, texto que no es
+// número...) repiten en el mensaje el valor rechazado:
+//   el valor «99999» está fuera de rango para el tipo smallint
+// Para esos, el mensaje se omite: el código ya dice qué clase de problema fue.
 export function describirError(err) {
     if (!err) return 'error desconocido'
     const partes = []
     if (err.code) partes.push(`code=${err.code}`)
     if (err.constraint) partes.push(`constraint=${err.constraint}`)
-    partes.push(err.message ?? String(err))
+    if (String(err.code ?? '').startsWith('22')) {
+        partes.push('(mensaje omitido: los errores de tipo de dato incluyen el valor rechazado)')
+    } else {
+        partes.push(err.message ?? String(err))
+    }
     return partes.join(' ')
 }
 

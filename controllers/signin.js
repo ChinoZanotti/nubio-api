@@ -1,8 +1,12 @@
 import { firmarToken } from '../utils/token.js'
-import { normalizarEmail } from '../utils/authValidation.js'
+import { normalizarEmail, validarEmail } from '../utils/authValidation.js'
 import { COSTO_BCRYPT } from './register.js'
 import { registrarError } from '../utils/log.js'
-import { esperaPendiente, registrarFallo, registrarExito } from '../utils/intentosPorCuenta.js'
+import { esperaPendiente, registrarIntento, registrarExito } from '../utils/intentosPorCuenta.js'
+
+// Tope de largo de la contraseña en el login (en caracteres). Muy por encima
+// de cualquier contraseña real; solo evita procesar textos enormes.
+const MAX_PASSWORD_SIGNIN = 1024
 
 // Siempre el mismo mensaje: si dijéramos "ese email no existe", cualquiera
 // podría averiguar quién tiene cuenta.
@@ -14,22 +18,32 @@ let hashDeRelleno = null
 export const handleSignin = async (req, res, db, bcrypt) => {
     const email = normalizarEmail(req.body?.email)
     const { password } = req.body ?? {}
-    // Solo tipos y vacío. NO se aplica el máximo de 72 bytes: si alguien se
-    // registró antes con una contraseña más larga, bcrypt la truncó al guardar
-    // y la trunca igual al comparar, así que le sigue funcionando.
-    if (!email || typeof password !== 'string' || !password) {
+    // Tipos, formato y largo, ANTES de contar nada (tercera revisión de Case,
+    // A1): un "email" de 1 MB que llegara al límite por cuenta llenaba la
+    // memoria. validarEmail exige formato y máximo 254 caracteres.
+    // La contraseña NO tiene el máximo de 72 bytes del registro (quien se
+    // registró antes con una más larga sigue entrando: bcrypt la trunca igual
+    // al comparar), pero sí un tope generoso para no procesar textos enormes.
+    if (!email || validarEmail(email) || typeof password !== 'string' || !password || password.length > MAX_PASSWORD_SIGNIN) {
         return res.status(400).json(CREDENCIALES_INVALIDAS)
     }
 
     // Límite por cuenta (utils/intentosPorCuenta.js): va ANTES de bcrypt, así
     // los intentos frenados no gastan CPU. Aplica igual a emails que no existen.
-    const espera = esperaPendiente(email)
+    // Desde una IP donde este email ya entró antes, no hay demora (ver ahí).
+    const espera = esperaPendiente(email, req.ip)
     if (espera > 0) {
         res.set('Retry-After', String(espera))
         return res.status(429).json({
             error: `Hubo muchos intentos fallidos con este correo. Esperá ${espera} ${espera === 1 ? 'segundo' : 'segundos'} y volvé a probar.`,
         })
     }
+
+    // Se reserva el intento YA, antes de los await (base y bcrypt, ~500 ms).
+    // Si se registrara después, todos los pedidos que llegan en paralelo
+    // pasarían el chequeo de arriba (tercera revisión, M3). Si el login sale
+    // bien, registrarExito lo borra.
+    registrarIntento(email)
 
     try {
         const fila = await db('login').select('hash').where({ email }).first()
@@ -46,10 +60,10 @@ export const handleSignin = async (req, res, db, bcrypt) => {
         const valida = await bcrypt.compare(password, fila?.hash ?? hashDeRelleno)
 
         if (!fila || !valida) {
-            registrarFallo(email)
+            // El fallo ya quedó contado con registrarIntento
             return res.status(400).json(CREDENCIALES_INVALIDAS)
         }
-        registrarExito(email)
+        registrarExito(email, req.ip)
 
         // Hashes viejos (costo menor al actual): este es el único momento en que
         // tenemos la contraseña en texto, así que aprovechamos para recalcular

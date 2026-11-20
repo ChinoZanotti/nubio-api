@@ -1,6 +1,6 @@
 import { registrarError } from '../utils/log.js'
 import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
-import { encolarAlertasParaMarcas, hayLugarEnCola } from '../services/alertas.js'
+import { encolarAlertasParaMarcas, faltaLugarEnCola } from '../services/alertas.js'
 
 const MAX_IMPORTACION = 1000
 // Tope de marcas por usuario. Un estudio grande vigila cientos o pocos miles
@@ -27,8 +27,12 @@ function aFila(marca, userId) {
 // { estado, error } para responder. Se chequea ANTES de insertar: si no, podrían
 // quedar marcas guardadas que nunca reciben sus alertas.
 async function verificarCapacidad(db, userId, cantidad) {
-    if (!hayLugarEnCola(cantidad)) {
-        // 503 = el servidor está ocupado, no es un error del usuario: puede reintentar.
+    // 503 = ocupado, no es un error del usuario: puede reintentar en un rato.
+    const falta = faltaLugarEnCola(userId, cantidad)
+    if (falta === 'usuario') {
+        return { estado: 503, error: 'Todavía se están generando las alertas de tus marcas anteriores. Probá de nuevo en unos minutos.' }
+    }
+    if (falta === 'servidor') {
         return { estado: 503, error: 'El servidor está procesando muchas marcas. Probá de nuevo en unos minutos.' }
     }
     const { total } = await db('marcas').where({ user_id: userId }).count('* as total').first()
@@ -79,7 +83,7 @@ export const handleCreateMarca = async (req, res, db) => {
         // También por la fila, y sin esperar: si esperáramos y la fila estuviera
         // ocupada con importaciones de otros, este pedido quedaría colgado
         // minutos. Con la fila libre, las alertas están en menos de un segundo.
-        encolarAlertasParaMarcas(db, [nueva.id])
+        encolarAlertasParaMarcas(db, [nueva.id], userId)
         res.status(201).json(nueva)
     } catch (err) {
         if (err.code === UNIQUE_VIOLATION) {
@@ -140,7 +144,7 @@ export const handleCreateMarcasBulk = async (req, res, db) => {
         // Sin await, a propósito: con cientos de marcas el motor tarda minutos.
         // Respondemos ya y las alertas se generan en segundo plano, en la fila
         // de trabajos (de a uno, cediendo el turno para no congelar la API).
-        encolarAlertasParaMarcas(db, insertadas.map((m) => m.id))
+        encolarAlertasParaMarcas(db, insertadas.map((m) => m.id), userId)
 
         // 3) Las que no volvieron en `returning` son duplicadas.
         const clave = (m) => `${m.pais}|${m.expediente}`

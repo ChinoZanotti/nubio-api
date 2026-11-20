@@ -162,17 +162,38 @@ export async function generarAlertasParaMarcas(db, marcaIds) {
 // Vive en memoria: si el servidor se reinicia a mitad de camino, esas alertas no
 // se generan. `npm run recalcular-alertas` las recupera (compara cada boletín
 // contra todas las marcas).
+//
+// Tope POR USUARIO (tercera revisión de Case, M4): con solo el tope global, una
+// cuenta llenaba las 5000 plazas con 5 importaciones y todos los demás recibían
+// 503 durante ~13 minutos. Con 1000 por usuario (lo que entra en una
+// importación), una cuenta usa como mucho un 20% de la fila: tiene que esperar
+// a que terminen sus alertas antes de importar de nuevo.
 export const MAX_MARCAS_EN_COLA = 5000
+export const MAX_MARCAS_EN_COLA_POR_USUARIO = 1000
 let cola = Promise.resolve()
 let marcasEnCola = 0
+const marcasEnColaPorUsuario = new Map() // userId -> marcas pendientes
 
-export function hayLugarEnCola(cantidad) {
-    return marcasEnCola + cantidad <= MAX_MARCAS_EN_COLA
+// ¿Entran `cantidad` marcas más de este usuario? Devuelve null si entran, o el
+// motivo: 'usuario' (sus propias alertas todavía se están generando) o
+// 'servidor' (la fila está llena con las de todos).
+export function faltaLugarEnCola(userId, cantidad) {
+    if ((marcasEnColaPorUsuario.get(userId) ?? 0) + cantidad > MAX_MARCAS_EN_COLA_POR_USUARIO) return 'usuario'
+    if (marcasEnCola + cantidad > MAX_MARCAS_EN_COLA) return 'servidor'
+    return null
 }
 
-export function encolarAlertasParaMarcas(db, marcaIds) {
-    const cantidad = marcaIds.length
+function sumarEnCola(userId, cantidad) {
     marcasEnCola += cantidad
+    const nuevo = (marcasEnColaPorUsuario.get(userId) ?? 0) + cantidad
+    // Al llegar a 0 se borra la entrada: el Map no crece con cada usuario que pasó.
+    if (nuevo > 0) marcasEnColaPorUsuario.set(userId, nuevo)
+    else marcasEnColaPorUsuario.delete(userId)
+}
+
+export function encolarAlertasParaMarcas(db, marcaIds, userId) {
+    const cantidad = marcaIds.length
+    sumarEnCola(userId, cantidad)
     cola = cola
         .then(async () => {
             const inicio = performance.now()
@@ -181,6 +202,6 @@ export function encolarAlertasParaMarcas(db, marcaIds) {
         })
         .catch((err) => registrarError('Generación de alertas', err))
         // finally: se descuenta tanto si el trabajo salió bien como si falló.
-        .finally(() => { marcasEnCola -= cantidad })
+        .finally(() => sumarEnCola(userId, -cantidad))
     return cola
 }

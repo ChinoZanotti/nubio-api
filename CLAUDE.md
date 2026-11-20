@@ -67,7 +67,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - `generarAlertasParaBoletin(db, fecha)`: un boletín contra todas las marcas. Lo llama el importador.
   - `generarAlertasParaMarcas(db, ids)`: marcas nuevas contra lo publicado con plazo abierto. El servidor NUNCA la llama directo: siempre a través de la fila.
   - `encolarAlertasParaMarcas(db, ids)`: la fila de trabajos en segundo plano. Procesa de a uno, así nunca hay dos motores ni dos copias de las publicaciones en memoria. La usan `POST /marcas` y `/marcas/bulk`, y ninguno espera: con la fila libre, las alertas de una marca están en menos de un segundo. La fila vive en memoria: si el servidor se reinicia a mitad de un trabajo, esas alertas se recuperan con `npm run recalcular-alertas`.
-  - Tope de la fila: `MAX_MARCAS_EN_COLA` = 5000 marcas pendientes (unos 13 min de CPU). Se cuenta en marcas y no en trabajos, porque uno de 1000 pesa 1000 veces más que uno de 1. Los controladores preguntan `hayLugarEnCola(n)` ANTES de insertar y, si no hay lugar, responden 503 con `Retry-After`. Así no quedan marcas guardadas sin alertas. Antes del tope, una cuenta podía encolar horas de CPU y las alertas de los demás no llegaban nunca (hallazgo N1 de la segunda revisión de Case).
+  - Tope de la fila: `MAX_MARCAS_EN_COLA` = 5000 marcas pendientes (unos 13 min de CPU). Se cuenta en marcas y no en trabajos, porque uno de 1000 pesa 1000 veces más que uno de 1. Además, `MAX_MARCAS_EN_COLA_POR_USUARIO` = 1000 (lo que entra en una importación): una cuenta no puede llenar la fila sola y dejar a las demás con 503 (M4 de la tercera revisión). Los controladores preguntan `faltaLugarEnCola(userId, n)` ANTES de insertar. Si devuelve `'usuario'` (sus alertas todavía se generan) o `'servidor'` (fila llena), responden 503 con `Retry-After`. Así no quedan marcas guardadas sin alertas. `encolarAlertasParaMarcas(db, ids, userId)` suma y, en el `finally`, resta del contador global y del de ese usuario. Antes del tope, una cuenta podía encolar horas de CPU y las alertas de los demás no llegaban nunca (hallazgo N1 de la segunda revisión de Case).
   - Caché de lo publicado en plazo, ya preparado (`publicadasEnPlazo`): traer y preparar las ~9000 publicaciones cuesta ~300 ms. La clave es día + id máximo + cantidad de `boletin_marcas` en la ventana: el importador corre en otro proceso y no puede avisar, así que cada trabajo compara la clave (una consulta barata). Medido: 367 ms el primer trabajo de una marca, 92 ms los siguientes.
 - `npm run recalcular-alertas`: vuelve a correr el motor sobre todos los boletines (solo agrega). Usarlo después de ajustar el motor. Las alertas viejas que el motor nuevo ya no generaría NO se borran.
 - `npm test`: tests con `node:test` (sin dependencias).
@@ -89,9 +89,13 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - `/signin`: 10 intentos FALLIDOS cada 15 min por IP (los exitosos no cuentan).
   - `/signin`, además, por CUENTA (`utils/intentosPorCuenta.js`, dentro del controlador): frena a quien reparte intentos entre muchas IPs contra un mismo email.
     - Cuenta los fallos de la última hora por email, de cualquier IP. Los primeros 10 son libres; después hay que esperar 1, 2, 4… segundos entre intentos, con techo de 60 s, y si no se espera da 429 con `Retry-After`. Un login correcto borra el contador.
-    - Es demora y no bloqueo a propósito: un bloqueo serviría para dejar afuera a la víctima. Así el atacante queda en ~60 intentos por hora por cuenta, y la víctima espera como mucho un minuto.
+    - Es demora y no bloqueo a propósito: un bloqueo serviría para dejar afuera a la víctima. El atacante queda en ~60 intentos por hora por cuenta.
+    - IPs conocidas (M2 de la tercera revisión): desde una IP donde ese email ya inició sesión en los últimos 30 días no hay demora. Sin esto, un atacante con un intento por minuto tenía a la víctima siempre esperando. Desde esas IPs sigue valiendo el límite por IP. Una víctima que entra desde una IP nueva mientras la atacan todavía puede tener que esperar (hasta 60 s por intento).
+    - El intento se reserva con `registrarIntento` ANTES de bcrypt, y `registrarExito` lo borra si sale bien. Antes se registraba después, y los pedidos en paralelo pasaban todos el chequeo (M3). Medido: de 30 intentos simultáneos desde 30 IPs pasan 10 y 20 reciben 429. Si la base falla en el medio, el intento queda contado como fallo.
+    - Antes de contar, el login exige un email válido (`validarEmail`: formato y máximo 254) y una contraseña de hasta 1024 caracteres (A1: un "email" de 1 MB llenaba la memoria).
+    - Las claves en memoria son SHA-256 del email (o de email|IP): largo fijo y sin emails guardados. Hasta 50.000 entradas por tabla; las más viejas se descartan. Un `setInterval` con `.unref()` barre las vencidas cada 10 minutos.
     - Cuenta también emails inexistentes, con el mismo mensaje, para no revelar qué cuentas existen.
-    - Se chequea antes de bcrypt (los intentos frenados no gastan CPU). Hasta 50.000 emails en memoria; los más viejos se descartan.
+    - Se chequea antes de bcrypt (los intentos frenados no gastan CPU).
     - Tests en `tests/intentosPorCuenta.test.js`.
   - `/register`: 5 cada hora por IP.
   - `/marcas/bulk`: 10 importaciones por hora por USUARIO (`keyGenerator` con `req.userId`). Va después de `requireAuth` en la ruta, porque necesita `req.userId`.
@@ -156,7 +160,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 
 ## Convenciones importantes
 - Todas las rutas responden errores como `{ error: 'mensaje' }`. Cuando hay errores por campo, agregan `errores: { campo: mensaje }`.
-- Errores al log SIEMPRE con `registrarError(contexto, err)` (`utils/log.js`), nunca con `console.error(err)`. El objeto completo de `pg` trae `detail`, donde Postgres copia los datos de la fila: emails, titulares, `user_id`. El helper deja solo `code`, el nombre de la `constraint` y `message`. Tests en `tests/log.test.js`. Los scripts de `scripts/` pueden seguir usando `console.error(err)`: corren en la terminal del dueño, no en los logs de Render.
+- Errores al log SIEMPRE con `registrarError(contexto, err)` (`utils/log.js`), nunca con `console.error(err)`. El objeto completo de `pg` trae `detail`, donde Postgres copia los datos de la fila: emails, titulares, `user_id`. El helper deja solo `code`, el nombre de la `constraint` y `message`. Knex le antepone la consulta al `message`, pero con pg va con `$1, $2…` y sin valores (verificado con errores reales). Los errores de tipo de dato (`22xxx`) repiten el valor rechazado en el mensaje ("el valor «99999» está fuera de rango"), así que para esos se omite el `message` (M1 de la tercera revisión). Tests en `tests/log.test.js`. Los scripts de `scripts/` pueden seguir usando `console.error(err)`: corren en la terminal del dueño, no en los logs de Render.
 - Códigos de error de Postgres que se manejan: 23505 (unique) → 409, 23503 (foreign key) → 400.
 - Headers de seguridad y CORS en `middleware/seguridad.js`. Orden en `server.js`: helmet → CORS → limitador general → `express.json`.
   - Helmet con la CSP más estricta (`default-src 'none'; frame-ancestors 'none'`), porque la API nunca sirve HTML. Además `X-Frame-Options: DENY`, HSTS y `nosniff`, y saca `X-Powered-By`.
@@ -176,7 +180,17 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, segunda revisión de Case (noviembre 2026). Ya resueltos: N1 a N9, I1 e I2. Falta:
+- Seguridad, tercera revisión de Case (noviembre 2026). Ya resueltos: A1, M1, M2, M3 y M4. Faltan, en orden:
+  - B1: `parsearConsulta` de boletines. Un `campo` u `orden` que llega como array pasa la lista blanca (`Object.hasOwn` lo convierte a texto) y termina en 500; lo mismo una fecha con formato válido pero inexistente (`2026-99-99`) o una clase fuera de rango (`99999`). Exigir `typeof === 'string'`, validar la fecha real y la clase entre 1 y 45. No es inyección.
+  - B4: `db.js` solo saca `sslmode`; un `ssl=0` en la URL apagaría TLS. Rechazar o sacar todos los parámetros `ssl*` (`ssl`, `sslcert`, `sslkey`, `sslrootcert`, `uselibpqcompat`).
+  - B5 (frontend): `response.json().catch(() => null)` en `marcasApi.js` se come el `AbortError` que pasa mientras llega el cuerpo, y Boletines muestra el esqueleto un instante y pierde el foco del filtro. Ignorar la respuesta si `signal.aborted`.
+  - B6 (frontend): si en otra pestaña entra OTRO usuario, esta sigue mostrando los datos del anterior (el servidor rechaza las acciones). `key={user?.id}` en `Layout` para que se vuelva a montar.
+  - Frontend: `maxLength={200}` en el filtro de texto de `FiltrosMarcas` (el backend rechaza más de 200 con un 400 genérico).
+  - B2: `/boletines/marcas` hace 5 consultas por pedido y el pool de knex tiene 10 conexiones. Caché de `totalGeneral` y `opciones`, `statement_timeout` y un limitador por usuario.
+  - B3: varios bulk en paralelo pueden pasar el chequeo de capacidad antes de encolar (hay un `await COUNT` en el medio). Reservar el lugar en la fila de forma síncrona; el tope por usuario, con una transacción y `pg_advisory_xact_lock(userId)`.
+  - Registrar eventos de seguridad (logins fallidos, 429 por cuenta, registros) con hash del email e IP.
+  - A decidir: los términos buscados en Boletines viajan en el query string y pueden quedar en los logs de Render/Cloudflare. Son datos públicos, pero revelan qué investiga el estudio (alternativa: pasar a POST).
+- Seguridad, de la segunda revisión de Case falta:
   - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
 - Contraseñas, lo que falta de la política recomendada por Case (noviembre 2026), para cuando se hagan el cambio de contraseña, los roles y la invitación de usuarios:
   - Endpoint de cambio de contraseña con las mismas reglas + `revisarFiltrada`, verificando la actual.
