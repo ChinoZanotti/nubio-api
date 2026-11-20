@@ -1,17 +1,17 @@
 import { registrarError } from '../utils/log.js'
 
-// GET /boletines/marcas: las marcas publicadas por DINAPI, de a una página.
+// POST /boletines/marcas/buscar: las marcas publicadas por DINAPI, de a una página.
 //
 // Antes devolvía la tabla entera (más de 13.000 filas, unos 3 MB) en cada
 // visita, y el navegador filtraba, ordenaba y paginaba. Ahora todo eso lo
 // hace la base y viajan solo las filas de la página (hallazgo N9 de Case).
 //
-// Parámetros (query string), todos opcionales:
+// Parámetros (en el cuerpo JSON), todos opcionales:
 //   pagina     número de página, desde 1 (default 1)
 //   porPagina  filas por página, 1 a 100 (default 20)
 //   orden      columna (ver ORDEN) (default fecha_publicacion)
 //   direccion  asc | desc (default desc)
-//   filtros    JSON: [{ campo, valor }] o, en fechas, [{ campo, desde, hasta }]
+//   filtros    array: [{ campo, valor }] o, en fechas, [{ campo, desde, hasta }]
 //
 // Respuesta: { marcas, total, totalGeneral, opciones: { pais, tramite } }
 //   total: cuántas cumplen los filtros; totalGeneral: cuántas hay en total.
@@ -107,16 +107,17 @@ export function parsearConsulta(query) {
         return { error: 'Orden inválido.' }
     }
 
-    let crudos = []
-    if (query.filtros !== undefined) {
-        if (typeof query.filtros !== 'string') return { error: 'Filtros inválidos.' }
+    // En el POST (cuerpo JSON) los filtros llegan como array. En el GET viejo
+    // llegaban como texto JSON en la URL: TRANSITORIO, se saca junto con el GET.
+    let crudos = query.filtros ?? []
+    if (typeof crudos === 'string') {
         try {
-            crudos = JSON.parse(query.filtros)
+            crudos = JSON.parse(crudos)
         } catch {
             return { error: 'Filtros inválidos.' }
         }
-        if (!Array.isArray(crudos) || crudos.length > MAX_FILTROS) return { error: 'Filtros inválidos.' }
     }
+    if (!Array.isArray(crudos) || crudos.length > MAX_FILTROS) return { error: 'Filtros inválidos.' }
 
     // Se arma cada filtro de nuevo, con solo los campos que corresponden: lo
     // que siga adelante es exactamente lo que se validó acá.
@@ -207,8 +208,19 @@ async function opcionesDesplegables(db, { cantidad, maximo }) {
     return opciones
 }
 
-export const handleGetBoletinMarcas = async (req, res, db) => {
-    const { consulta, error } = parsearConsulta(req.query)
+// POST /boletines/marcas/buscar: la búsqueda va en el CUERPO del pedido.
+// Antes iba en la URL (GET con query string), y los términos buscados
+// (titulares, agentes) quedaban en los logs de acceso de Render y Cloudflare,
+// que guardan la URL pero no el cuerpo. Son datos públicos de DINAPI, pero la
+// búsqueda revela qué investiga el estudio.
+export const handleBuscarBoletinMarcas = (req, res, db) => responderBusqueda(req.body, res, db)
+
+// GET /boletines/marcas: TRANSITORIO, solo mientras el frontend nuevo (que usa
+// el POST) no está publicado. Se borra en el commit siguiente.
+export const handleGetBoletinMarcas = (req, res, db) => responderBusqueda(req.query, res, db)
+
+async function responderBusqueda(datos, res, db) {
+    const { consulta, error } = parsearConsulta(datos ?? {})
     if (error) return res.status(400).json({ error })
     const { pagina, porPagina, orden, direccion, filtros } = consulta
 

@@ -65,3 +65,18 @@ test('los filtros que siguen adelante son solo lo validado (sin propiedades de m
     const { consulta } = parsearConsulta({ filtros: JSON.stringify([{ campo: 'titular', valor: 'sa', extra: 'x', __proto__: { y: 1 } }]) })
     assert.deepEqual(consulta.filtros, [{ campo: 'titular', valor: 'sa' }])
 })
+
+test('POST: los filtros llegan como array en el cuerpo (y números sin pasar a texto)', () => {
+    const { consulta } = parsearConsulta({
+        pagina: 2, porPagina: 50, orden: 'titular', direccion: 'asc',
+        filtros: [{ campo: 'denominacion', valor: 'cafe' }, { campo: 'fecha_publicacion', desde: '2026-10-01' }],
+    })
+    assert.deepEqual(consulta, {
+        pagina: 2, porPagina: 50, orden: 'titular', direccion: 'asc',
+        filtros: [{ campo: 'denominacion', valor: 'cafe' }, { campo: 'fecha_publicacion', desde: '2026-10-01', hasta: '' }],
+    })
+    // las mismas validaciones valen para el cuerpo
+    assert.ok(parsearConsulta({ filtros: [{ campo: ['pais'], valor: 'PY' }] }).error)
+    assert.ok(parsearConsulta({ filtros: { campo: 'pais' } }).error)
+    assert.ok(parsearConsulta({ pagina: '1; drop' }).error)
+})
