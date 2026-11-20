@@ -25,10 +25,18 @@ pg.types.setTypeParser(1082, (valor) => valor)
 //     verify-full, pero avisa que desde pg 9 va a significar "cifrar SIN
 //     verificar" (como libpq). Al actualizar `pg` perderíamos la verificación
 //     sin enterarnos.
-// Por eso, con Neon: no-verify y disable cortan el arranque (alguien pidió
-// algo inseguro a propósito), y cualquier otro sslmode se SACA de la URL, para
-// que siempre mande nuestro { rejectUnauthorized: true }, en cualquier versión.
-const SSLMODE_INSEGUROS = ['no-verify', 'disable']
+// No es solo sslmode (tercera revisión de Case, B4): `ssl=0` apaga TLS,
+// `sslcert`/`sslkey`/`sslrootcert` reemplazan el objeto ssl, y
+// `uselibpqcompat` cambia cómo se interpreta sslmode. Todos pisan lo de acá.
+// Por eso, con Neon:
+// - lo que pide algo inseguro a propósito corta el arranque (mejor enterarse);
+// - cualquier otro parámetro ssl* (y uselibpqcompat) se SACA de la URL, para
+//   que siempre mande nuestro { rejectUnauthorized: true }, en cualquier versión.
+const INSEGUROS = {
+    sslmode: ['no-verify', 'disable'],
+    ssl: ['0', 'false', 'no'],
+}
+const pisaSsl = (nombre) => nombre.toLowerCase().startsWith('ssl') || nombre.toLowerCase() === 'uselibpqcompat'
 
 function prepararUrl(url) {
     let parseada
@@ -39,14 +47,19 @@ function prepararUrl(url) {
     }
     if (!parseada.hostname.endsWith('neon.tech')) return { url, esNeon: false }
 
-    const sslmode = parseada.searchParams.get('sslmode')
-    if (SSLMODE_INSEGUROS.includes(sslmode)) {
-        throw new Error(
-            `DATABASE_URL tiene sslmode=${sslmode}: la conexión a Neon no se verificaría. ` +
-            'Sacá ese parámetro de la URL (db.js ya exige cifrado verificado).',
-        )
+    for (const [nombre, valores] of Object.entries(INSEGUROS)) {
+        const valor = parseada.searchParams.get(nombre)?.toLowerCase()
+        if (valores.includes(valor)) {
+            throw new Error(
+                `DATABASE_URL tiene ${nombre}=${valor}: la conexión a Neon no se verificaría. ` +
+                'Sacá ese parámetro de la URL (db.js ya exige cifrado verificado).',
+            )
+        }
     }
-    parseada.searchParams.delete('sslmode')
+    // [...keys()] primero: borrar mientras se recorre saltearía claves.
+    for (const nombre of [...parseada.searchParams.keys()]) {
+        if (pisaSsl(nombre)) parseada.searchParams.delete(nombre)
+    }
     return { url: parseada.toString(), esNeon: true }
 }
 

@@ -40,7 +40,7 @@ const FILTROS = {
     referencia: 'texto',
 }
 const MAX_FILTROS = 20
-const LARGO_MAXIMO_VALOR = 200
+const LARGO_MAXIMO_VALOR = 200 // = LARGO_MAXIMO_FILTRO del frontend (maxLength del filtro)
 const FECHA_ISO = /^\d{4}-\d{2}-\d{2}$/
 const MAX_POR_PAGINA = 100
 
@@ -97,36 +97,60 @@ export function parsearConsulta(query) {
     const porPagina = enteroEntre(query.porPagina, 1, MAX_POR_PAGINA, 20)
     if (pagina === null || porPagina === null) return { error: 'Página inválida.' }
 
+    // typeof === 'string' antes de buscar en las listas blancas (tercera
+    // revisión de Case, B1): Object.hasOwn convierte la clave a texto, así que
+    // un array como ["pais"] (o ?orden=a&orden=b, que Express entrega como
+    // array) pasaba el chequeo y terminaba en un 500 dentro de knex.
     const orden = query.orden ?? 'fecha_publicacion'
     const direccion = query.direccion ?? 'desc'
-    if (!Object.hasOwn(ORDEN, orden) || !['asc', 'desc'].includes(direccion)) {
+    if (typeof orden !== 'string' || !Object.hasOwn(ORDEN, orden) || !['asc', 'desc'].includes(direccion)) {
         return { error: 'Orden inválido.' }
     }
 
-    let filtros = []
+    let crudos = []
     if (query.filtros !== undefined) {
+        if (typeof query.filtros !== 'string') return { error: 'Filtros inválidos.' }
         try {
-            filtros = JSON.parse(query.filtros)
+            crudos = JSON.parse(query.filtros)
         } catch {
             return { error: 'Filtros inválidos.' }
         }
-        if (!Array.isArray(filtros) || filtros.length > MAX_FILTROS) return { error: 'Filtros inválidos.' }
-        for (const f of filtros) {
-            const tipo = Object.hasOwn(FILTROS, f?.campo) ? FILTROS[f.campo] : null
-            if (!tipo) return { error: 'Filtros inválidos.' }
-            if (tipo === 'fecha') {
-                for (const borde of [f.desde, f.hasta]) {
-                    if (borde !== undefined && borde !== '' && !(typeof borde === 'string' && FECHA_ISO.test(borde))) {
-                        return { error: 'Fecha inválida en los filtros.' }
-                    }
-                }
-            } else if (typeof f.valor !== 'string' || f.valor.length > LARGO_MAXIMO_VALOR) {
-                return { error: 'Filtros inválidos.' }
+        if (!Array.isArray(crudos) || crudos.length > MAX_FILTROS) return { error: 'Filtros inválidos.' }
+    }
+
+    // Se arma cada filtro de nuevo, con solo los campos que corresponden: lo
+    // que siga adelante es exactamente lo que se validó acá.
+    const filtros = []
+    for (const f of crudos) {
+        const campo = f?.campo
+        if (typeof campo !== 'string' || !Object.hasOwn(FILTROS, campo)) return { error: 'Filtros inválidos.' }
+        if (FILTROS[campo] === 'fecha') {
+            const desde = f.desde ?? ''
+            const hasta = f.hasta ?? ''
+            for (const borde of [desde, hasta]) {
+                if (borde !== '' && !esFechaReal(borde)) return { error: 'Fecha inválida en los filtros.' }
             }
+            filtros.push({ campo, desde, hasta })
+        } else {
+            if (typeof f.valor !== 'string' || f.valor.length > LARGO_MAXIMO_VALOR) return { error: 'Filtros inválidos.' }
+            filtros.push({ campo, valor: f.valor })
         }
     }
 
     return { consulta: { pagina, porPagina, orden, direccion, filtros } }
+}
+
+// "aaaa-mm-dd" que además EXISTE: "2026-99-99" tiene el formato pero no es una
+// fecha, y Postgres respondía con un error (500). Date.UTC corre los valores
+// que se pasan (mes 13 -> enero del año siguiente): si al volver a armarla no
+// da lo mismo, no existía. Años entre 1900 y 2999: los boletines son recientes,
+// y Postgres no acepta el año 0.
+function esFechaReal(texto) {
+    if (typeof texto !== 'string' || !FECHA_ISO.test(texto)) return false
+    const [anio, mes, dia] = texto.split('-').map(Number)
+    if (anio < 1900 || anio > 2999) return false
+    const fecha = new Date(Date.UTC(anio, mes - 1, dia))
+    return fecha.toISOString().slice(0, 10) === texto
 }
 
 // Agrega a la consulta un WHERE por cada filtro activo (se combinan con Y,
@@ -149,8 +173,11 @@ function aplicarFiltros(query, filtros) {
             )
         } else if (tipo === 'numero') {
             const n = Number(valor)
-            // Un número que no es entero no coincide con nada (como en el frontend)
-            if (Number.isInteger(n)) query.where(f.campo, n)
+            // Un número que no es entero, o fuera de 1-45, no coincide con nada
+            // (como en el frontend). Sin el rango, "99999" no entraba en el
+            // smallint de clase_niza y Postgres respondía con error (500).
+            // El único campo numérico es clase_niza.
+            if (Number.isInteger(n) && n >= 1 && n <= 45) query.where(f.campo, n)
             else query.whereRaw('false')
         } else {
             query.where(f.campo, valor)

@@ -39,3 +39,19 @@ test('un host que solo CONTIENE "neon.tech" no se trata como Neon', () => {
     // antes se usaba url.includes('neon.tech'); ahora se mira el hostname real
     assert.equal(configCon('postgresql://u:neon.tech@localhost/db').ssl, false)
 })
+
+test('B4: ssl=0 (o false) en una URL de Neon no arranca', () => {
+    for (const valor of ['0', 'false', 'FALSE']) {
+        assert.throws(() => configCon(`${NEON}?ssl=${valor}`), /no se verificaría/, valor)
+    }
+})
+
+test('B4: se sacan todos los parámetros ssl* y uselibpqcompat, y se conserva el resto', () => {
+    const { connectionString, ssl } = configCon(
+        `${NEON}?ssl=true&sslrootcert=/tmp/x.pem&sslcert=/tmp/c&sslkey=/tmp/k&uselibpqcompat=true&sslmode=require&channel_binding=require&application_name=nubio`,
+    )
+    assert.doesNotMatch(connectionString, /ssl|uselibpqcompat/i)
+    assert.match(connectionString, /channel_binding=require/)
+    assert.match(connectionString, /application_name=nubio/)
+    assert.deepEqual(ssl, { rejectUnauthorized: true })
+})

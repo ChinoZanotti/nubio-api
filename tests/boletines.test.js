@@ -47,3 +47,21 @@ test('filtros de fecha: aaaa-mm-dd o vacío', () => {
     assert.ok(f('01/10/2026', '').error)
     assert.ok(f("2026-10-01' or 1=1", '').error)
 })
+
+test('B1: campo u orden como array (no texto) se rechazan con 400, no 500', () => {
+    assert.ok(parsearConsulta({ filtros: JSON.stringify([{ campo: ['pais'], valor: 'PY' }]) }).error)
+    assert.ok(parsearConsulta({ orden: ['denominacion'] }).error)
+    assert.ok(parsearConsulta({ orden: ['a', 'b'] }).error) // ?orden=a&orden=b
+    assert.ok(parsearConsulta({ filtros: ['[]'] }).error)    // ?filtros=..&filtros=..
+})
+
+test('B1: fechas con formato válido pero inexistentes se rechazan', () => {
+    const f = (desde) => parsearConsulta({ filtros: JSON.stringify([{ campo: 'fecha_publicacion', desde }]) })
+    for (const fecha of ['2026-99-99', '2026-02-30', '0000-01-01', '2026-13-01']) assert.ok(f(fecha).error, fecha)
+    assert.ok(f('2024-02-29').consulta) // bisiesto: existe
+})
+
+test('los filtros que siguen adelante son solo lo validado (sin propiedades de más)', () => {
+    const { consulta } = parsearConsulta({ filtros: JSON.stringify([{ campo: 'titular', valor: 'sa', extra: 'x', __proto__: { y: 1 } }]) })
+    assert.deepEqual(consulta.filtros, [{ campo: 'titular', valor: 'sa' }])
+})

@@ -16,7 +16,7 @@ try {
 }
 
 const host = new URL(process.env.DATABASE_URL).hostname
-const esNeon = host.includes('neon.tech')
+const esNeon = host.endsWith('neon.tech') // igual que db.js
 
 try {
     const { rows } = await db.raw('select current_database() as base, version() as version')

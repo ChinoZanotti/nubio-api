@@ -15,7 +15,9 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - La conexión SIEMPRE se arma a partir de `process.env.DATABASE_URL` (nunca hardcodear host/user/password — ya pasamos por ese bug en producción una vez).
 - `db.js` (`crearDb()`) es la ÚNICA configuración de la conexión: la usan `server.js` y los scripts. No armar `knex({...})` a mano en otro lado. También fija el parser de DATE (ver abajo).
 - TLS hacia Neon (cuando el hostname termina en `neon.tech`) con `rejectUnauthorized: true`: verifica el certificado y el host, no solo cifra. Si alguna vez falla con un error de certificado, no volver a poner `false`: investigar la causa.
-- `sslmode` en la URL: `pg` deja que la URL pise el `ssl` de la config. `db.js` corta el arranque si una URL de Neon trae `sslmode=no-verify` o `disable`, y saca de la URL cualquier otro `sslmode` (como el `require` que trae Neon), así siempre manda nuestro `rejectUnauthorized: true`. Importa porque `pg` 9 va a cambiar `require` a "cifrar sin verificar"; con esto, actualizar `pg` no nos quita la verificación. Tests en `tests/db.test.js`.
+- Parámetros `ssl*` en la URL: `pg` deja que la URL pise el `ssl` de la config. Con Neon, `db.js`:
+  - corta el arranque si la URL pide algo inseguro: `sslmode=no-verify` o `disable`, o `ssl=0`/`false`;
+  - saca de la URL cualquier otro parámetro que empiece con `ssl` (`sslmode`, `ssl`, `sslcert`, `sslkey`, `sslrootcert`…) y también `uselibpqcompat`. Así siempre manda nuestro `rejectUnauthorized: true`. B4 de la tercera revisión: antes solo se miraba `sslmode`. Importa porque `pg` 9 va a cambiar `require` a "cifrar sin verificar"; con esto, actualizar `pg` no nos quita la verificación. Tests en `tests/db.test.js`.
 - `npm run probar-conexion` prueba la conexión con esa misma config y lo comprueba de verdad, mirando el socket de Node: `encrypted` (va cifrada) y `authorized` (verificó el certificado y el host). Con Neon, si no está verificado, termina con error. También chequea que exista la intercalación `es-x-icu`.
   - `pg_stat_ssl` se muestra solo como dato. La URL de producción usa el **pooler** de Neon (host `-pooler`, PgBouncer), y entonces Postgres informa SU conexión con el pooler, que es interna y va sin TLS, no la nuestra. Da "sin TLS" aunque nuestro tramo esté bien. Por eso no sirve para decidir.
   - Contra Neon, sin tocar el `.env`: en Git Bash, `DATABASE_URL="postgresql://...neon.tech/..." npm run probar-conexion`. En PowerShell, `$env:DATABASE_URL = "..."`, después `npm run probar-conexion` y al final `Remove-Item Env:DATABASE_URL`, para no dejar la terminal apuntando a producción.
@@ -128,6 +130,10 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 ### Boletines DINAPI (`controllers/boletines.js`)
 - `GET /boletines/marcas` — paginado: el servidor filtra, ordena y pagina. Antes devolvía las 13.000+ marcas (~3 MB) y filtraba el navegador; ahora son ~6 KB por página (hallazgo N9 de Case).
   - Query: `pagina` (default 1), `porPagina` (1-100, default 20), `orden` (lista blanca `ORDEN`, default `fecha_publicacion`), `direccion` (`asc`|`desc`, default `desc`) y `filtros` (JSON `[{ campo, valor }]` o `[{ campo, desde, hasta }]` para fechas). Cualquier cosa fuera de las listas blancas da 400. `parsearConsulta` valida todo; tests en `tests/boletines.test.js`.
+    - `campo`, `orden` y `filtros` tienen que ser texto (`typeof === 'string'`) antes de buscarse en las listas blancas. `Object.hasOwn` convierte la clave a texto, y un array como `["pais"]` (o `?orden=a&orden=b`) pasaba y daba 500 (B1 de la tercera revisión).
+    - Las fechas tienen que existir (`esFechaReal`: `2026-99-99` o `0000-01-01` dan 400), y la clase tiene que estar entre 1 y 45 (fuera de rango no coincide con nada, en vez de reventar el `smallint`).
+    - Cada filtro se vuelve a armar con solo `campo` y `valor` (o `desde` y `hasta`): sigue adelante exactamente lo validado.
+    - `LARGO_MAXIMO_VALOR` (200) es el `maxLength` del filtro de texto del frontend (`LARGO_MAXIMO_FILTRO` en `marcaFiltros.js`).
   - Respuesta: `{ marcas, total, totalGeneral, opciones: { pais, tramite } }`. `total` es lo que cumple los filtros; `opciones`, los valores que existen para los desplegables.
   - Los filtros replican `filtrarMarcas` del frontend. Texto: sin mayúsculas ni tildes (`translate()` + `lower()`, porque `unaccent` no está activada) y `%`/`_` escapados. Número: exacto. Opciones: igualdad. Fecha: rango. Se verificó contra la lógica del frontend en 10 combinaciones, con los mismos totales.
   - `FILTROS` y `ORDEN` tienen que coincidir con `CAMPOS_FILTRO_BOLETIN` y las columnas de `BoletinesDinapi.jsx` del frontend.
@@ -180,12 +186,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, tercera revisión de Case (noviembre 2026). Ya resueltos: A1, M1, M2, M3 y M4. Faltan, en orden:
-  - B1: `parsearConsulta` de boletines. Un `campo` u `orden` que llega como array pasa la lista blanca (`Object.hasOwn` lo convierte a texto) y termina en 500; lo mismo una fecha con formato válido pero inexistente (`2026-99-99`) o una clase fuera de rango (`99999`). Exigir `typeof === 'string'`, validar la fecha real y la clase entre 1 y 45. No es inyección.
-  - B4: `db.js` solo saca `sslmode`; un `ssl=0` en la URL apagaría TLS. Rechazar o sacar todos los parámetros `ssl*` (`ssl`, `sslcert`, `sslkey`, `sslrootcert`, `uselibpqcompat`).
-  - B5 (frontend): `response.json().catch(() => null)` en `marcasApi.js` se come el `AbortError` que pasa mientras llega el cuerpo, y Boletines muestra el esqueleto un instante y pierde el foco del filtro. Ignorar la respuesta si `signal.aborted`.
-  - B6 (frontend): si en otra pestaña entra OTRO usuario, esta sigue mostrando los datos del anterior (el servidor rechaza las acciones). `key={user?.id}` en `Layout` para que se vuelva a montar.
-  - Frontend: `maxLength={200}` en el filtro de texto de `FiltrosMarcas` (el backend rechaza más de 200 con un 400 genérico).
+- Seguridad, tercera revisión de Case (noviembre 2026). Ya resueltos: A1, M1 a M4, B1, B4, B5, B6 y el `maxLength` del filtro. Faltan, en orden:
   - B2: `/boletines/marcas` hace 5 consultas por pedido y el pool de knex tiene 10 conexiones. Caché de `totalGeneral` y `opciones`, `statement_timeout` y un limitador por usuario.
   - B3: varios bulk en paralelo pueden pasar el chequeo de capacidad antes de encolar (hay un `await COUNT` en el medio). Reservar el lugar en la fila de forma síncrona; el tope por usuario, con una transacción y `pg_advisory_xact_lock(userId)`.
   - Registrar eventos de seguridad (logins fallidos, 429 por cuenta, registros) con hash del email e IP.
