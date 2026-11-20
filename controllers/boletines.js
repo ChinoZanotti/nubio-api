@@ -186,6 +186,27 @@ function aplicarFiltros(query, filtros) {
     return query
 }
 
+// Opciones de los desplegables (países y trámites que existen en los
+// boletines), en caché. Antes eran dos SELECT DISTINCT sobre toda la tabla en
+// CADA pedido, y solo cambian cuando entra un boletín (tercera revisión, B2).
+// La clave es cantidad + id máximo: cambia sola si se importa o se borra algo
+// (el importador corre en otro proceso y no puede avisar). Esos dos números ya
+// vienen en el pedido (son el `totalGeneral`), así que el caché no agrega
+// consultas.
+let cacheOpciones = null // { clave, opciones }
+
+async function opcionesDesplegables(db, { cantidad, maximo }) {
+    const clave = `${cantidad}|${maximo}`
+    if (cacheOpciones?.clave === clave) return cacheOpciones.opciones
+    const [paises, tramites] = await Promise.all([
+        db('boletin_marcas').distinct('pais').orderBy('pais'),
+        db('boletin_marcas').distinct('tramite').whereNotNull('tramite').orderBy('tramite'),
+    ])
+    const opciones = { pais: paises.map((p) => p.pais), tramite: tramites.map((t) => t.tramite) }
+    cacheOpciones = { clave, opciones }
+    return opciones
+}
+
 export const handleGetBoletinMarcas = async (req, res, db) => {
     const { consulta, error } = parsearConsulta(req.query)
     if (error) return res.status(400).json({ error })
@@ -194,7 +215,9 @@ export const handleGetBoletinMarcas = async (req, res, db) => {
     try {
         const filtrada = () => aplicarFiltros(db('boletin_marcas'), filtros)
 
-        const [marcas, { total }, { totalGeneral }, paises, tramites] = await Promise.all([
+        // 3 consultas en paralelo (antes 5): la página, cuántas cumplen los
+        // filtros y el resumen de la tabla (que además da la clave del caché).
+        const [marcas, { total }, resumen] = await Promise.all([
             filtrada()
                 .select(COLUMNAS)
                 // Los vacíos al final en cualquier dirección (como useSort), y
@@ -206,17 +229,14 @@ export const handleGetBoletinMarcas = async (req, res, db) => {
                 .limit(porPagina)
                 .offset((pagina - 1) * porPagina),
             filtrada().count('* as total').first(),
-            db('boletin_marcas').count('* as totalGeneral').first(),
-            // Opciones de los desplegables: los valores que existen, no todos los posibles.
-            db('boletin_marcas').distinct('pais').orderBy('pais'),
-            db('boletin_marcas').distinct('tramite').whereNotNull('tramite').orderBy('tramite'),
+            db('boletin_marcas').count('* as cantidad').max('id as maximo').first(),
         ])
 
         res.json({
             marcas,
             total: Number(total),
-            totalGeneral: Number(totalGeneral),
-            opciones: { pais: paises.map((p) => p.pais), tramite: tramites.map((t) => t.tramite) },
+            totalGeneral: Number(resumen.cantidad),
+            opciones: await opcionesDesplegables(db, resumen),
         })
     } catch (err) {
         registrarError('GET /boletines/marcas', err)

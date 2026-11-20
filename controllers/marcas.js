@@ -1,6 +1,6 @@
 import { registrarError } from '../utils/log.js'
 import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
-import { encolarAlertasParaMarcas, faltaLugarEnCola } from '../services/alertas.js'
+import { reservarLugarEnCola } from '../services/alertas.js'
 
 const MAX_IMPORTACION = 1000
 // Tope de marcas por usuario. Un estudio grande vigila cientos o pocos miles
@@ -22,33 +22,51 @@ function aFila(marca, userId) {
     return { ...marca, denominacion: marca.denominacion || null, user_id: userId }
 }
 
-// Antes de guardar `cantidad` marcas nuevas: ¿hay lugar en la fila de alertas y
-// el usuario no se pasa de su tope? Devuelve null si se puede seguir, o
-// { estado, error } para responder. Se chequea ANTES de insertar: si no, podrían
-// quedar marcas guardadas que nunca reciben sus alertas.
-async function verificarCapacidad(db, userId, cantidad) {
-    // 503 = ocupado, no es un error del usuario: puede reintentar en un rato.
-    const falta = faltaLugarEnCola(userId, cantidad)
-    if (falta === 'usuario') {
-        return { estado: 503, error: 'Todavía se están generando las alertas de tus marcas anteriores. Probá de nuevo en unos minutos.' }
-    }
-    if (falta === 'servidor') {
-        return { estado: 503, error: 'El servidor está procesando muchas marcas. Probá de nuevo en unos minutos.' }
-    }
-    const { total } = await db('marcas').where({ user_id: userId }).count('* as total').first()
-    if (Number(total) + cantidad > MAX_MARCAS_POR_USUARIO) {
-        return {
-            estado: 400,
-            error: `Se pueden cargar hasta ${MAX_MARCAS_POR_USUARIO} marcas por cuenta (tenés ${total}).`,
-        }
-    }
-    return null
+// Antes de guardar marcas nuevas se chequean dos topes, y ninguno puede tener
+// carreras (tercera revisión de Case, B3): varias importaciones en paralelo
+// pasaban todas el chequeo antes de que alguna terminara de insertar.
+//
+// 1) Lugar en la fila de alertas: se RESERVA (reservarLugarEnCola) antes de
+//    insertar, en el mismo paso en que se revisa. Si después algo falla, se
+//    libera; si entran menos marcas (duplicadas), se devuelve lo que sobró.
+// 2) Tope de marcas por usuario: el COUNT y el INSERT van en una transacción
+//    con un candado de Postgres por usuario (pg_advisory_xact_lock). Una
+//    segunda importación del mismo usuario espera en la base a que termine la
+//    primera, y cuenta las marcas que esa ya insertó. El candado se suelta solo
+//    al terminar la transacción. Usa dos números: CANDADO_MARCAS dice "esto es
+//    de marcas", así no choca con otro candado futuro que use el id del usuario.
+
+const CANDADO_MARCAS = 1
+
+const MENSAJES_FILA = {
+    usuario: 'Todavía se están generando las alertas de tus marcas anteriores. Probá de nuevo en unos minutos.',
+    servidor: 'El servidor está procesando muchas marcas. Probá de nuevo en unos minutos.',
 }
 
-function responderCapacidad(res, problema) {
-    // Retry-After: le dice al cliente cuántos segundos esperar antes de reintentar.
-    if (problema.estado === 503) res.set('Retry-After', '120')
-    return res.status(problema.estado).json({ error: problema.error })
+// 503 = ocupado, no es un error del usuario: puede reintentar en un rato.
+// Retry-After le dice cuántos segundos esperar.
+function responderFilaLlena(res, falta) {
+    res.set('Retry-After', '120')
+    return res.status(503).json({ error: MENSAJES_FILA[falta] })
+}
+
+class TopeDeMarcasSuperado extends Error {
+    constructor(actuales) {
+        super(`Se pueden cargar hasta ${MAX_MARCAS_POR_USUARIO} marcas por cuenta (tenés ${actuales}).`)
+        this.actuales = actuales
+    }
+}
+
+// Inserta dentro de una transacción con el candado del usuario, después de
+// comprobar que `nuevas` marcas más no pasan su tope. `insertar(trx)` hace el
+// INSERT con la transacción y devuelve lo que inserte.
+async function insertarConTope(db, userId, nuevas, insertar) {
+    return db.transaction(async (trx) => {
+        await trx.raw('select pg_advisory_xact_lock(?, ?)', [CANDADO_MARCAS, userId])
+        const { total } = await trx('marcas').where({ user_id: userId }).count('* as total').first()
+        if (Number(total) + nuevas > MAX_MARCAS_POR_USUARIO) throw new TopeDeMarcasSuperado(total)
+        return insertar(trx)
+    })
 }
 
 export const handleGetMarcas = async (req, res, db) => {
@@ -75,17 +93,23 @@ export const handleCreateMarca = async (req, res, db) => {
         return res.status(400).json({ error: Object.values(errores)[0], errores })
     }
 
-    try {
-        const problema = await verificarCapacidad(db, userId, 1)
-        if (problema) return responderCapacidad(res, problema)
+    const reserva = reservarLugarEnCola(userId, 1)
+    if (reserva.falta) return responderFilaLlena(res, reserva.falta)
 
-        const [nueva] = await db('marcas').insert(aFila(marca, userId)).returning(COLUMNAS)
+    try {
+        const [nueva] = await insertarConTope(db, userId, 1,
+            (trx) => trx('marcas').insert(aFila(marca, userId)).returning(COLUMNAS))
         // También por la fila, y sin esperar: si esperáramos y la fila estuviera
         // ocupada con importaciones de otros, este pedido quedaría colgado
         // minutos. Con la fila libre, las alertas están en menos de un segundo.
-        encolarAlertasParaMarcas(db, [nueva.id], userId)
+        // Va después del commit: el motor tiene que poder leer la marca.
+        reserva.encolar(db, [nueva.id])
         res.status(201).json(nueva)
     } catch (err) {
+        reserva.liberar()
+        if (err instanceof TopeDeMarcasSuperado) {
+            return res.status(400).json({ error: err.message })
+        }
         if (err.code === UNIQUE_VIOLATION) {
             return res.status(409).json({ error: 'Ya tenés una marca con ese expediente en ese país.' })
         }
@@ -127,24 +151,25 @@ export const handleCreateMarcasBulk = async (req, res, db) => {
         return res.json({ insertadas: 0, errores })
     }
 
-    try {
-        // Cuenta las válidas, aunque algunas resulten duplicadas: es conservador
-        // (puede rechazar un poco antes del tope exacto), pero nunca se pasa.
-        const problema = await verificarCapacidad(db, userId, validas.length)
-        if (problema) return responderCapacidad(res, problema)
+    // Reserva por las válidas, aunque algunas resulten duplicadas: es
+    // conservador (puede rechazar un poco antes del tope exacto), pero nunca
+    // se pasa. Lo que sobre se devuelve al encolar.
+    const reserva = reservarLugarEnCola(userId, validas.length)
+    if (reserva.falta) return responderFilaLlena(res, reserva.falta)
 
+    try {
         // 2) Un solo INSERT con todas las filas. ON CONFLICT DO NOTHING saltea las
         // que ya existen (o que vienen repetidas en el mismo archivo) sin abortar el resto.
-        const insertadas = await db('marcas')
+        const insertadas = await insertarConTope(db, userId, validas.length, (trx) => trx('marcas')
             .insert(validas.map((v) => aFila(v.marca, userId)))
             .onConflict(['user_id', 'pais', 'expediente'])
             .ignore()
-            .returning(['id', 'pais', 'expediente'])
+            .returning(['id', 'pais', 'expediente']))
 
         // Sin await, a propósito: con cientos de marcas el motor tarda minutos.
         // Respondemos ya y las alertas se generan en segundo plano, en la fila
         // de trabajos (de a uno, cediendo el turno para no congelar la API).
-        encolarAlertasParaMarcas(db, insertadas.map((m) => m.id), userId)
+        reserva.encolar(db, insertadas.map((m) => m.id))
 
         // 3) Las que no volvieron en `returning` son duplicadas.
         const clave = (m) => `${m.pais}|${m.expediente}`
@@ -160,6 +185,10 @@ export const handleCreateMarcasBulk = async (req, res, db) => {
         errores.sort((a, b) => a.fila - b.fila)
         res.json({ insertadas: insertadas.length, errores })
     } catch (err) {
+        reserva.liberar()
+        if (err instanceof TopeDeMarcasSuperado) {
+            return res.status(400).json({ error: err.message })
+        }
         if (err.code === FOREIGN_KEY_VIOLATION) {
             return res.status(400).json({ error: 'El usuario no existe.' })
         }

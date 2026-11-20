@@ -6,7 +6,7 @@ import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleMe } from './controllers/me.js'
 import { requireAuth } from './middleware/requireAuth.js'
-import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorImportacion } from './middleware/rateLimit.js'
+import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorImportacion, limitadorBoletines } from './middleware/rateLimit.js'
 import { corsNubio, helmetNubio } from './middleware/seguridad.js'
 import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
 import { verificarConfiguracion } from './utils/token.js'
@@ -76,7 +76,7 @@ app.post('/marcas/bulk', requireAuth, limitadorImportacion, (req, res) => handle
 
 // Boletines DINAPI: los datos son públicos, pero la consulta es pesada.
 // Se protege para que no la pueda martillar cualquiera.
-app.get('/boletines/marcas', requireAuth, (req, res) => handleGetBoletinMarcas(req, res, db))
+app.get('/boletines/marcas', requireAuth, limitadorBoletines, (req, res) => handleGetBoletinMarcas(req, res, db))
 
 // Alertas
 app.get('/alertas', requireAuth, (req, res) => handleGetAlertas(req, res, db))

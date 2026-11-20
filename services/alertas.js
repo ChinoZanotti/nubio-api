@@ -191,9 +191,50 @@ function sumarEnCola(userId, cantidad) {
     else marcasEnColaPorUsuario.delete(userId)
 }
 
-export function encolarAlertasParaMarcas(db, marcaIds, userId) {
-    const cantidad = marcaIds.length
+// Reserva lugar en la fila ANTES de insertar (tercera revisión de Case, B3).
+// Antes se preguntaba faltaLugarEnCola, después había await (COUNT, INSERT) y
+// recién al final se sumaba: varias importaciones en paralelo pasaban todas el
+// chequeo y se pasaban del tope. Revisar y reservar en el mismo paso, sin await
+// en el medio, no deja carrera (Node corre este código de a un pedido por vez).
+//
+// Devuelve { falta } si no hay lugar ('usuario' | 'servidor'). Si hay, devuelve
+// { falta: null, encolar, liberar }:
+// - encolar(db, ids): encola lo que efectivamente se insertó y devuelve lo que
+//   sobró de la reserva (por ejemplo, marcas duplicadas que no entraron);
+// - liberar(): devuelve toda la reserva, si algo falló antes de encolar.
+// Usar una sola de las dos, una sola vez.
+export function reservarLugarEnCola(userId, cantidad) {
+    const falta = faltaLugarEnCola(userId, cantidad)
+    if (falta) return { falta }
     sumarEnCola(userId, cantidad)
+    let usada = false
+    return {
+        falta: null,
+        encolar(db, marcaIds) {
+            if (usada) return
+            usada = true
+            sumarEnCola(userId, -(cantidad - marcaIds.length))
+            return encolarReservado(db, marcaIds, userId)
+        },
+        liberar() {
+            if (usada) return
+            usada = true
+            sumarEnCola(userId, -cantidad)
+        },
+    }
+}
+
+// Encola sin chequear el tope (lo usan los tests y la reserva de arriba).
+export function encolarAlertasParaMarcas(db, marcaIds, userId) {
+    sumarEnCola(userId, marcaIds.length)
+    return encolarReservado(db, marcaIds, userId)
+}
+
+// El lugar ya está sumado en los contadores: acá solo se encola el trabajo y,
+// al terminar, se descuenta.
+function encolarReservado(db, marcaIds, userId) {
+    const cantidad = marcaIds.length
+    if (cantidad === 0) return cola
     cola = cola
         .then(async () => {
             const inicio = performance.now()

@@ -50,6 +50,19 @@ export const limitadorImportacion = limitador({
     message: { error: 'Hiciste muchas importaciones en poco tiempo. Probá de nuevo en una hora.' },
 })
 
+// Boletines: por USUARIO (tercera revisión de Case, B2). Cada pedido corre
+// varias consultas sobre 13.000+ filas; el límite general por IP deja pasar 500
+// de golpe y, con el pool de 10 conexiones, eso hacía esperar a todos (incluido
+// el login). 60 por minuto sobra para un uso real: el filtro espera 300 ms
+// después de la última tecla y una página se pide de a una.
+// Tiene que ir DESPUÉS de requireAuth en la ruta: usa req.userId.
+export const limitadorBoletines = limitador({
+    windowMs: 60 * 1000,
+    limit: 60,
+    keyGenerator: (req) => `usuario:${req.userId}`,
+    message: { error: 'Demasiadas búsquedas seguidas. Esperá un minuto y volvé a probar.' },
+})
+
 // General: un techo amplio para toda la API, contra scripts que martillan
 // cualquier ruta (por ejemplo /boletines/marcas, que es pesada).
 // 500 cada 15 minutos son ~33 por minuto: un uso normal no se acerca, ni
