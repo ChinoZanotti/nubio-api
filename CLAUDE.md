@@ -172,6 +172,18 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 ## Convenciones importantes
 - Todas las rutas responden errores como `{ error: 'mensaje' }`. Cuando hay errores por campo, agregan `errores: { campo: mensaje }`.
 - Errores al log SIEMPRE con `registrarError(contexto, err)` (`utils/log.js`), nunca con `console.error(err)`. El objeto completo de `pg` trae `detail`, donde Postgres copia los datos de la fila: emails, titulares, `user_id`. El helper deja solo `code`, el nombre de la `constraint` y `message`. Knex le antepone la consulta al `message`, pero con pg va con `$1, $2…` y sin valores (verificado con errores reales). Los errores de tipo de dato (`22xxx`) repiten el valor rechazado en el mensaje ("el valor «99999» está fuera de rango"), así que para esos se omite el `message` (M1 de la tercera revisión). Tests en `tests/log.test.js`. Los scripts de `scripts/` pueden seguir usando `console.error(err)`: corren en la terminal del dueño, no en los logs de Render.
+- Eventos de seguridad con `registrarEvento(evento, datos)` (`utils/eventos.js`). Una línea por evento: `[seguridad] {"evento":…,"cuenta":…,"ip":…,"ts":…}`. En los logs de Render, buscar `[seguridad]`.
+  - Eventos:
+    - `login_ok`, con `ipNueva`: la cuenta nunca había entrado desde esa IP; es lo primero que conviene mirar si se sospecha un robo.
+    - `login_fallido`, con `cuentaExiste`: si es `false`, es un barrido de emails inventados; si es `true`, un ataque contra una cuenta real.
+    - `login_demorado`: el límite por cuenta frenó el intento.
+    - `registro_ok`.
+    - `registro_rechazado`, con `motivo`: `validacion` (con los `campos`), `password_filtrada` o `duplicado`.
+    - `limite_superado`, con `limitador`: `login`, `registro`, `importacion`, `boletines` o `general`. Se registra el primero de cada limitador e IP (o usuario) y después a lo sumo uno por minuto, con `frenados`, para que un ataque no llene el log.
+  - El email NUNCA va en claro: va como `cuenta`, un HMAC-SHA256 truncado con una clave derivada de `JWT_SECRET` (rótulo "eventos"). Es estable por email, para cruzar eventos, pero no se puede revertir probando emails conocidos, como pasaría con un SHA-256 común. Si cambia `JWT_SECRET`, cambian los códigos. Para saber qué cuenta es un código: `codigoDeCuenta(email)` con el email sospechado.
+  - Nunca contraseñas ni tokens. La IP va tal cual: es lo que permite ver de dónde viene un ataque.
+  - Durante `npm test` no se escribe (Node define `NODE_TEST_CONTEXT`); los tests del registro pasan su propia función `escribir`. Tests en `tests/eventos.test.js`.
+  - Medido: con un ataque distribuido de 13 intentos desde 13 IPs y 25 pedidos desde una IP frenada, quedaron 28 líneas y ningún email en claro.
 - Códigos de error de Postgres que se manejan: 23505 (unique) → 409, 23503 (foreign key) → 400.
 - Headers de seguridad y CORS en `middleware/seguridad.js`. Orden en `server.js`: helmet → CORS → limitador general → `express.json`.
   - Helmet con la CSP más estricta (`default-src 'none'; frame-ancestors 'none'`), porque la API nunca sirve HTML. Además `X-Frame-Options: DENY`, HSTS y `nosniff`, y saca `X-Powered-By`.
@@ -191,8 +203,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, tercera revisión de Case (noviembre 2026). Ya resueltos: A1, M1 a M4, B1 a B6, el `maxLength` del filtro y la búsqueda de Boletines por POST. Falta:
-  - Registrar eventos de seguridad (logins fallidos, 429 por cuenta, registros) con hash del email e IP.
+- Seguridad, tercera revisión de Case (noviembre 2026): resuelta completa (A1, M1 a M4, B1 a B6, el `maxLength` del filtro, la búsqueda de Boletines por POST y el registro de eventos de seguridad).
 - Seguridad, de la segunda revisión de Case falta:
   - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
 - Contraseñas, lo que falta de la política recomendada por Case (noviembre 2026), para cuando se hagan el cambio de contraseña, los roles y la invitación de usuarios:

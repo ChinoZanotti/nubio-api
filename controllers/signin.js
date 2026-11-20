@@ -2,7 +2,8 @@ import { firmarToken } from '../utils/token.js'
 import { normalizarEmail, validarEmail } from '../utils/authValidation.js'
 import { COSTO_BCRYPT } from './register.js'
 import { registrarError } from '../utils/log.js'
-import { esperaPendiente, registrarIntento, registrarExito } from '../utils/intentosPorCuenta.js'
+import { esperaPendiente, registrarIntento, registrarExito, esIpConocida } from '../utils/intentosPorCuenta.js'
+import { registrarEvento } from '../utils/eventos.js'
 
 // Tope de largo de la contraseña en el login (en caracteres). Muy por encima
 // de cualquier contraseña real; solo evita procesar textos enormes.
@@ -33,6 +34,7 @@ export const handleSignin = async (req, res, db, bcrypt) => {
     // Desde una IP donde este email ya entró antes, no hay demora (ver ahí).
     const espera = esperaPendiente(email, req.ip)
     if (espera > 0) {
+        registrarEvento('login_demorado', { email, ip: req.ip, espera })
         res.set('Retry-After', String(espera))
         return res.status(429).json({
             error: `Hubo muchos intentos fallidos con este correo. Esperá ${espera} ${espera === 1 ? 'segundo' : 'segundos'} y volvé a probar.`,
@@ -60,9 +62,16 @@ export const handleSignin = async (req, res, db, bcrypt) => {
         const valida = await bcrypt.compare(password, fila?.hash ?? hashDeRelleno)
 
         if (!fila || !valida) {
-            // El fallo ya quedó contado con registrarIntento
+            // El fallo ya quedó contado con registrarIntento.
+            // En el evento SÍ se distingue si la cuenta existe (el usuario no lo
+            // ve, el log sí): muchos fallos contra cuentas que no existen son un
+            // barrido; contra una que existe, un ataque dirigido.
+            registrarEvento('login_fallido', { email, ip: req.ip, cuentaExiste: Boolean(fila) })
             return res.status(400).json(CREDENCIALES_INVALIDAS)
         }
+        // ipNueva: entrar desde un lugar desde donde esta cuenta nunca entró es
+        // lo primero que conviene mirar si se sospecha un robo de contraseña.
+        registrarEvento('login_ok', { email, ip: req.ip, ipNueva: !esIpConocida(email, req.ip) })
         registrarExito(email, req.ip)
 
         // Hashes viejos (costo menor al actual): este es el único momento en que

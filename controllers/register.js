@@ -1,6 +1,7 @@
 import { validarRegistro } from '../utils/authValidation.js'
 import { registrarError } from '../utils/log.js'
 import { revisarFiltrada, MENSAJE_FILTRADA } from '../utils/passwordFiltrada.js'
+import { registrarEvento } from '../utils/eventos.js'
 
 // Costo de bcrypt: cada +1 duplica el tiempo de calcular el hash (y de probar
 // contraseñas por fuerza bruta si alguien se roba la tabla). Pasó de 10 a 12
@@ -16,6 +17,8 @@ export const handleRegister = async (req, res, db, bcrypt) => {
     // minúsculas y aplica las mismas reglas que el formulario del frontend.
     const { datos, errores } = validarRegistro(req.body ?? {})
     if (Object.keys(errores).length > 0) {
+        // Sin el email: puede ser inválido (o enorme). Solo qué campos fallaron.
+        registrarEvento('registro_rechazado', { ip: req.ip, motivo: 'validacion', campos: Object.keys(errores) })
         return res.status(400).json({ error: Object.values(errores)[0], errores })
     }
     const { name, email, password } = datos
@@ -25,6 +28,7 @@ export const handleRegister = async (req, res, db, bcrypt) => {
         // externo (Have I Been Pwned), así que va solo si todo lo demás pasó.
         const { filtrada } = await revisarFiltrada(password)
         if (filtrada) {
+            registrarEvento('registro_rechazado', { email, ip: req.ip, motivo: 'password_filtrada' })
             return res.status(400).json({ error: MENSAJE_FILTRADA, errores: { password: MENSAJE_FILTRADA } })
         }
 
@@ -38,13 +42,13 @@ export const handleRegister = async (req, res, db, bcrypt) => {
             return nuevo
         })
 
+        registrarEvento('registro_ok', { email, ip: req.ip, usuario: user.id })
         res.json(user)
     } catch (err) {
-        // Email ya registrado. Mensaje genérico y log sin err.detail: Postgres
-        // pone ahí el email ("Key (email)=(...) already exists") y no queremos
-        // datos personales en los logs.
+        // Email ya registrado. Mensaje genérico al usuario y evento sin el email
+        // en claro (Postgres lo pone en err.detail: "Key (email)=(...)").
         if (err.code === UNIQUE_VIOLATION) {
-            console.error('Registro rechazado: email duplicado')
+            registrarEvento('registro_rechazado', { email, ip: req.ip, motivo: 'duplicado' })
             return res.status(400).json({ error: 'No se pudo completar el registro.' })
         }
         registrarError('POST /register', err)

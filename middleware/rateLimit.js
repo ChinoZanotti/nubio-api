@@ -1,4 +1,5 @@
 import { rateLimit } from 'express-rate-limit'
+import { registrarEvento } from '../utils/eventos.js'
 
 // Rate limiting: cuenta cuántos pedidos hace cada IP en una ventana de tiempo y,
 // si se pasa, responde 429 (Too Many Requests) sin llegar al controlador.
@@ -12,18 +13,50 @@ import { rateLimit } from 'express-rate-limit'
 const QUINCE_MINUTOS = 15 * 60 * 1000
 const UNA_HORA = 60 * 60 * 1000
 
-function limitador(opciones) {
+// Cada 429 queda en el registro de eventos de seguridad (utils/eventos.js).
+// Pero un atacante frenado manda cientos de pedidos por minuto: registrar cada
+// uno llenaría el log y taparía lo importante. Se registra el primero de cada
+// limitador + IP/usuario y después a lo sumo uno por minuto, con cuántos se
+// frenaron en el medio (`frenados`).
+const INTERVALO_REGISTRO_MS = 60 * 1000
+const MAX_CLAVES_REGISTRO = 10_000
+const ultimosRegistros = new Map() // `${nombre}|${clave}` -> { desde, frenados }
+
+function registrarLimite(nombre, req) {
+    // Por usuario (si el limitador cuenta por usuario) o por IP
+    const quien = req.userId !== undefined ? { usuario: req.userId } : {}
+    const k = `${nombre}|${req.userId ?? req.ip}`
+    const ahora = Date.now()
+    const previo = ultimosRegistros.get(k)
+    if (previo && ahora - previo.desde < INTERVALO_REGISTRO_MS) {
+        previo.frenados += 1
+        return
+    }
+    registrarEvento('limite_superado', { limitador: nombre, ip: req.ip, ...quien, frenados: (previo?.frenados ?? 0) + 1 })
+    // Tope de memoria: si se llena (muchas IPs distintas), se empieza de cero.
+    if (ultimosRegistros.size >= MAX_CLAVES_REGISTRO) ultimosRegistros.clear()
+    ultimosRegistros.set(k, { desde: ahora, frenados: 0 })
+}
+
+// `nombre` identifica al limitador en el registro de eventos.
+function limitador(nombre, opciones) {
     return rateLimit({
         standardHeaders: 'draft-8',
         legacyHeaders: false,
         ...opciones,
+        // Lo mismo que hace express-rate-limit por defecto (responder 429 con
+        // el mensaje), más el registro del evento.
+        handler(req, res, next, opcionesFinales) {
+            registrarLimite(nombre, req)
+            res.status(opcionesFinales.statusCode).send(opcionesFinales.message)
+        },
     })
 }
 
 // Login: frena a quien prueba contraseñas una tras otra (fuerza bruta).
 // skipSuccessfulRequests: solo cuentan los intentos FALLIDOS (respuesta >= 400).
 // Quien entra bien no gasta intentos; quien se equivoca 10 veces espera 15 minutos.
-export const limitadorLogin = limitador({
+export const limitadorLogin = limitador('login', {
     windowMs: QUINCE_MINUTOS,
     limit: 10,
     skipSuccessfulRequests: true,
@@ -32,7 +65,7 @@ export const limitadorLogin = limitador({
 
 // Registro: frena la creación masiva de cuentas. Cada registro corre bcrypt
 // (caro en CPU) y crea filas en la base. Cuentan todos los intentos.
-export const limitadorRegistro = limitador({
+export const limitadorRegistro = limitador('registro', {
     windowMs: UNA_HORA,
     limit: 5,
     message: { error: 'Demasiados registros desde esta conexión. Probá de nuevo en una hora.' },
@@ -43,7 +76,7 @@ export const limitadorRegistro = limitador({
 // varias IPs podía mandar cientos por hora. 10 por hora alcanza para un uso
 // real (cargar la cartera en varios archivos) y frena el abuso.
 // Tiene que ir DESPUÉS de requireAuth en la ruta: usa req.userId.
-export const limitadorImportacion = limitador({
+export const limitadorImportacion = limitador('importacion', {
     windowMs: UNA_HORA,
     limit: 10,
     keyGenerator: (req) => `usuario:${req.userId}`,
@@ -56,7 +89,7 @@ export const limitadorImportacion = limitador({
 // el login). 60 por minuto sobra para un uso real: el filtro espera 300 ms
 // después de la última tecla y una página se pide de a una.
 // Tiene que ir DESPUÉS de requireAuth en la ruta: usa req.userId.
-export const limitadorBoletines = limitador({
+export const limitadorBoletines = limitador('boletines', {
     windowMs: 60 * 1000,
     limit: 60,
     keyGenerator: (req) => `usuario:${req.userId}`,
@@ -67,7 +100,7 @@ export const limitadorBoletines = limitador({
 // cualquier ruta (por ejemplo /boletines/marcas, que es pesada).
 // 500 cada 15 minutos son ~33 por minuto: un uso normal no se acerca, ni
 // siquiera varias personas de un estudio que salen a internet con la misma IP.
-export const limitadorGeneral = limitador({
+export const limitadorGeneral = limitador('general', {
     windowMs: QUINCE_MINUTOS,
     limit: 500,
     message: { error: 'Demasiados pedidos. Esperá unos minutos y volvé a probar.' },
