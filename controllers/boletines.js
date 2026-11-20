@@ -107,16 +107,8 @@ export function parsearConsulta(query) {
         return { error: 'Orden inválido.' }
     }
 
-    // En el POST (cuerpo JSON) los filtros llegan como array. En el GET viejo
-    // llegaban como texto JSON en la URL: TRANSITORIO, se saca junto con el GET.
-    let crudos = query.filtros ?? []
-    if (typeof crudos === 'string') {
-        try {
-            crudos = JSON.parse(crudos)
-        } catch {
-            return { error: 'Filtros inválidos.' }
-        }
-    }
+    // Los filtros llegan como array en el cuerpo JSON del POST.
+    const crudos = query.filtros ?? []
     if (!Array.isArray(crudos) || crudos.length > MAX_FILTROS) return { error: 'Filtros inválidos.' }
 
     // Se arma cada filtro de nuevo, con solo los campos que corresponden: lo
@@ -213,14 +205,8 @@ async function opcionesDesplegables(db, { cantidad, maximo }) {
 // (titulares, agentes) quedaban en los logs de acceso de Render y Cloudflare,
 // que guardan la URL pero no el cuerpo. Son datos públicos de DINAPI, pero la
 // búsqueda revela qué investiga el estudio.
-export const handleBuscarBoletinMarcas = (req, res, db) => responderBusqueda(req.body, res, db)
-
-// GET /boletines/marcas: TRANSITORIO, solo mientras el frontend nuevo (que usa
-// el POST) no está publicado. Se borra en el commit siguiente.
-export const handleGetBoletinMarcas = (req, res, db) => responderBusqueda(req.query, res, db)
-
-async function responderBusqueda(datos, res, db) {
-    const { consulta, error } = parsearConsulta(datos ?? {})
+export const handleBuscarBoletinMarcas = async (req, res, db) => {
+    const { consulta, error } = parsearConsulta(req.body ?? {})
     if (error) return res.status(400).json({ error })
     const { pagina, porPagina, orden, direccion, filtros } = consulta
 

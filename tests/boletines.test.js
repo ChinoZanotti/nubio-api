@@ -24,24 +24,24 @@ test('solo se puede ordenar por las columnas de la lista blanca', () => {
     assert.ok(parsearConsulta({ direccion: 'asc; drop' }).error)
 })
 
-test('filtros: JSON válido, campos de la lista blanca y valores de texto', () => {
-    const ok = parsearConsulta({ filtros: JSON.stringify([{ campo: 'denominacion', valor: 'café' }]) })
+test('filtros: array, campos de la lista blanca y valores de texto', () => {
+    const ok = parsearConsulta({ filtros: ([{ campo: 'denominacion', valor: 'café' }]) })
     assert.deepEqual(ok.consulta.filtros, [{ campo: 'denominacion', valor: 'café' }])
     for (const filtros of [
         'no es json',
-        JSON.stringify({ campo: 'denominacion' }),                // no es array
-        JSON.stringify([{ campo: 'hash', valor: 'x' }]),         // campo fuera de la lista
-        JSON.stringify([{ campo: '__proto__', valor: 'x' }]),
-        JSON.stringify([{ campo: 'titular', valor: 5 }]),        // valor que no es texto
-        JSON.stringify([{ campo: 'titular', valor: 'x'.repeat(201) }]),
-        JSON.stringify(Array(21).fill({ campo: 'titular', valor: 'x' })),
+        ({ campo: 'denominacion' }),                // no es array
+        ([{ campo: 'hash', valor: 'x' }]),         // campo fuera de la lista
+        ([{ campo: '__proto__', valor: 'x' }]),
+        ([{ campo: 'titular', valor: 5 }]),        // valor que no es texto
+        ([{ campo: 'titular', valor: 'x'.repeat(201) }]),
+        (Array(21).fill({ campo: 'titular', valor: 'x' })),
     ]) {
         assert.ok(parsearConsulta({ filtros }).error, filtros)
     }
 })
 
 test('filtros de fecha: aaaa-mm-dd o vacío', () => {
-    const f = (desde, hasta) => parsearConsulta({ filtros: JSON.stringify([{ campo: 'fecha_publicacion', desde, hasta }]) })
+    const f = (desde, hasta) => parsearConsulta({ filtros: ([{ campo: 'fecha_publicacion', desde, hasta }]) })
     assert.ok(f('2026-10-01', '2026-10-15').consulta)
     assert.ok(f('', '2026-10-15').consulta)
     assert.ok(f('01/10/2026', '').error)
@@ -49,20 +49,20 @@ test('filtros de fecha: aaaa-mm-dd o vacío', () => {
 })
 
 test('B1: campo u orden como array (no texto) se rechazan con 400, no 500', () => {
-    assert.ok(parsearConsulta({ filtros: JSON.stringify([{ campo: ['pais'], valor: 'PY' }]) }).error)
+    assert.ok(parsearConsulta({ filtros: ([{ campo: ['pais'], valor: 'PY' }]) }).error)
     assert.ok(parsearConsulta({ orden: ['denominacion'] }).error)
     assert.ok(parsearConsulta({ orden: ['a', 'b'] }).error) // ?orden=a&orden=b
     assert.ok(parsearConsulta({ filtros: ['[]'] }).error)    // ?filtros=..&filtros=..
 })
 
 test('B1: fechas con formato válido pero inexistentes se rechazan', () => {
-    const f = (desde) => parsearConsulta({ filtros: JSON.stringify([{ campo: 'fecha_publicacion', desde }]) })
+    const f = (desde) => parsearConsulta({ filtros: ([{ campo: 'fecha_publicacion', desde }]) })
     for (const fecha of ['2026-99-99', '2026-02-30', '0000-01-01', '2026-13-01']) assert.ok(f(fecha).error, fecha)
     assert.ok(f('2024-02-29').consulta) // bisiesto: existe
 })
 
 test('los filtros que siguen adelante son solo lo validado (sin propiedades de más)', () => {
-    const { consulta } = parsearConsulta({ filtros: JSON.stringify([{ campo: 'titular', valor: 'sa', extra: 'x', __proto__: { y: 1 } }]) })
+    const { consulta } = parsearConsulta({ filtros: ([{ campo: 'titular', valor: 'sa', extra: 'x', __proto__: { y: 1 } }]) })
     assert.deepEqual(consulta.filtros, [{ campo: 'titular', valor: 'sa' }])
 })
 
@@ -79,4 +79,8 @@ test('POST: los filtros llegan como array en el cuerpo (y números sin pasar a t
     assert.ok(parsearConsulta({ filtros: [{ campo: ['pais'], valor: 'PY' }] }).error)
     assert.ok(parsearConsulta({ filtros: { campo: 'pais' } }).error)
     assert.ok(parsearConsulta({ pagina: '1; drop' }).error)
+})
+
+test('los filtros como texto JSON (el formato del GET que se sacó) se rechazan', () => {
+    assert.ok(parsearConsulta({ filtros: JSON.stringify([{ campo: 'titular', valor: 'sa' }]) }).error)
 })

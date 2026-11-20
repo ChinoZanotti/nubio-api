@@ -11,7 +11,7 @@ import { corsNubio, helmetNubio } from './middleware/seguridad.js'
 import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
 import { verificarConfiguracion } from './utils/token.js'
 import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk } from './controllers/marcas.js'
-import { handleBuscarBoletinMarcas, handleGetBoletinMarcas } from './controllers/boletines.js'
+import { handleBuscarBoletinMarcas } from './controllers/boletines.js'
 import { handleGetAlertas, handleUpdateAlerta } from './controllers/alertas.js'
 
 // Sin JWT_SECRET no se pueden firmar ni verificar tokens: cortamos al arrancar.
@@ -78,8 +78,6 @@ app.post('/marcas/bulk', requireAuth, limitadorImportacion, (req, res) => handle
 // Se protege para que no la pueda martillar cualquiera.
 // POST y no GET: la búsqueda va en el cuerpo, que no queda en los logs de acceso.
 app.post('/boletines/marcas/buscar', requireAuth, limitadorBoletines, (req, res) => handleBuscarBoletinMarcas(req, res, db))
-// TRANSITORIO: el GET de antes, hasta que se publique el frontend que usa el POST.
-app.get('/boletines/marcas', requireAuth, limitadorBoletines, (req, res) => handleGetBoletinMarcas(req, res, db))
 
 // Alertas
 app.get('/alertas', requireAuth, (req, res) => handleGetAlertas(req, res, db))

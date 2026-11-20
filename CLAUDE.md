@@ -131,7 +131,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 ### Boletines DINAPI (`controllers/boletines.js`)
 - `POST /boletines/marcas/buscar` — paginado: el servidor filtra, ordena y pagina. Antes devolvía las 13.000+ marcas (~3 MB) y filtraba el navegador; ahora son ~6 KB por página (hallazgo N9 de Case).
   - POST y no GET: la búsqueda va en el cuerpo y no en la URL, porque los logs de acceso de Render y Cloudflare guardan la URL. Los términos buscados son datos públicos, pero revelan qué investiga el estudio. No hay riesgo de CSRF: la autenticación va en el header `Authorization`, no en cookies.
-  - TRANSITORIO: `GET /boletines/marcas` (con los mismos parámetros en el query string) sigue vivo solo hasta que se publique el frontend que usa el POST. Después se borran la ruta, `handleGetBoletinMarcas` y la rama de `parsearConsulta` que acepta `filtros` como texto JSON.
+  - El viejo `GET /boletines/marcas` ya no existe (responde 404). Se deployó en tres pasos para no cortar el servicio: backend con los dos, frontend con el POST y, al final, se borró el GET. Usar el mismo esquema cada vez que cambie la forma de llamar a una ruta.
   - Cuerpo: `pagina` (default 1), `porPagina` (1-100, default 20), `orden` (lista blanca `ORDEN`, default `fecha_publicacion`), `direccion` (`asc`|`desc`, default `desc`) y `filtros` (array `[{ campo, valor }]` o `[{ campo, desde, hasta }]` para fechas). Cualquier cosa fuera de las listas blancas da 400. `parsearConsulta` valida todo; tests en `tests/boletines.test.js`.
     - `campo`, `orden` y `filtros` tienen que ser texto (`typeof === 'string'`) antes de buscarse en las listas blancas. `Object.hasOwn` convierte la clave a texto, y un array como `["pais"]` (o `?orden=a&orden=b`) pasaba y daba 500 (B1 de la tercera revisión).
     - Las fechas tienen que existir (`esFechaReal`: `2026-99-99` o `0000-01-01` dan 400), y la clase tiene que estar entre 1 y 45 (fuera de rango no coincide con nada, en vez de reventar el `smallint`).
@@ -191,9 +191,8 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Endpoint para actualizar perfil (nombre + foto).
 - Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
-- Seguridad, tercera revisión de Case (noviembre 2026). Ya resueltos: A1, M1 a M4, B1 a B6 y el `maxLength` del filtro. Faltan:
+- Seguridad, tercera revisión de Case (noviembre 2026). Ya resueltos: A1, M1 a M4, B1 a B6, el `maxLength` del filtro y la búsqueda de Boletines por POST. Falta:
   - Registrar eventos de seguridad (logins fallidos, 429 por cuenta, registros) con hash del email e IP.
-  - Borrar el `GET /boletines/marcas` transitorio cuando el frontend con el POST esté publicado (ver la ruta).
 - Seguridad, de la segunda revisión de Case falta:
   - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
 - Contraseñas, lo que falta de la política recomendada por Case (noviembre 2026), para cuando se hagan el cambio de contraseña, los roles y la invitación de usuarios:
