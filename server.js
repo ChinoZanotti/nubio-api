@@ -4,9 +4,9 @@ import bcrypt from 'bcrypt'
 import { crearDb } from './db.js'
 import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
-import { handleMe } from './controllers/me.js'
+import { handleMe, handleUpdateMe, handleCambiarPassword } from './controllers/me.js'
 import { requireAuth } from './middleware/requireAuth.js'
-import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorImportacion, limitadorBoletines } from './middleware/rateLimit.js'
+import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorImportacion, limitadorBoletines, limitadorCambioPassword } from './middleware/rateLimit.js'
 import { corsNubio, helmetNubio } from './middleware/seguridad.js'
 import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
 import { verificarConfiguracion } from './utils/token.js'
@@ -67,6 +67,9 @@ app.post('/register', limitadorRegistro, (req, res) => handleRegister(req, res, 
 // Toda ruta nueva que maneje datos tiene que llevarlo.
 
 app.get('/me', requireAuth, (req, res) => handleMe(req, res, db))
+app.patch('/me', requireAuth, (req, res) => handleUpdateMe(req, res, db))
+// El limitador va después de requireAuth: cuenta por usuario (req.userId).
+app.post('/me/password', requireAuth, limitadorCambioPassword, (req, res) => handleCambiarPassword(req, res, db, bcrypt))
 
 // Marcas
 app.get('/marcas', requireAuth, (req, res) => handleGetMarcas(req, res, db))

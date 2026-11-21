@@ -46,6 +46,21 @@ export function validarEmail(email) {
   return null
 }
 
+// Caracteres de control (el carácter nulo, saltos de línea…) y de formato
+// invisibles, como U+202E, que da vuelta el texto que le sigue y sirve para
+// disfrazar un nombre. El carácter nulo además hace fallar a Postgres (500
+// en vez de 400). Importa más cuando el admin vea la lista de usuarios.
+const CARACTERES_INVISIBLES = /[\p{Cc}\p{Cf}]/u
+
+// Recibe el nombre ya recortado (sin espacios al principio ni al final).
+// La usan el registro y el cambio de nombre en Mi cuenta (PATCH /me).
+export function validarNombre(name) {
+  if (!name) return 'Ingresá tu nombre.'
+  if (name.length > LARGO_MAXIMO_NOMBRE) return `El nombre puede tener hasta ${LARGO_MAXIMO_NOMBRE} caracteres.`
+  if (CARACTERES_INVISIBLES.test(name)) return 'El nombre tiene caracteres que no se pueden usar.'
+  return null
+}
+
 // Caracteres REALES, no unidades UTF-16: "hola😀".length da 6, pero son 5
 // caracteres. [...texto] separa por caracteres (puntos de código), como pide NIST.
 export const contarCaracteres = (texto) => [...texto].length
@@ -98,10 +113,8 @@ export function validarRegistro({ name, email, password }) {
   }
 
   const errores = {}
-  if (!datos.name) errores.name = 'Ingresá tu nombre.'
-  else if (datos.name.length > LARGO_MAXIMO_NOMBRE) {
-    errores.name = `El nombre puede tener hasta ${LARGO_MAXIMO_NOMBRE} caracteres.`
-  }
+  const errorNombre = validarNombre(datos.name)
+  if (errorNombre) errores.name = errorNombre
 
   const errorEmail = validarEmail(datos.email)
   if (errorEmail) errores.email = errorEmail

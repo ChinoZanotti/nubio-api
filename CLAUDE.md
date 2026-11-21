@@ -26,7 +26,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 
 ### Tablas
 - `login` (id, hash, email).
-- `users` (id, name, email, joined). La columna `marcas` (contador) se eliminó: la cantidad de marcas sale de un `COUNT` sobre la tabla `marcas`. Falta agregar `avatar_url`.
+- `users` (id, name, email, joined). La columna `marcas` (contador) se eliminó: la cantidad de marcas sale de un `COUNT` sobre la tabla `marcas`. No hay `avatar_url`: Nubio no tiene foto de perfil (decisión de noviembre 2026, ver el CLAUDE.md del frontend).
 - `marcas` (creada con `sql/001_marcas.sql`):
   - `id` SERIAL PK
   - `user_id` INTEGER NOT NULL → `users(id)` ON DELETE CASCADE
@@ -100,6 +100,10 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
     - Se chequea antes de bcrypt (los intentos frenados no gastan CPU).
     - Tests en `tests/intentosPorCuenta.test.js`.
   - `/register`: 5 cada hora por IP.
+  - `/me/password`: 5 intentos con la actual EQUIVOCADA cada 15 min por SESIÓN (`limitadorCambioPassword`, después de `requireAuth`). Quien tenga un token robado podría usar la ruta para adivinar la contraseña actual.
+    - Por sesión y no por usuario (revisión de Case de Mi cuenta, hallazgo medio): con la clave por usuario, el atacante gastaba los 5 intentos y la víctima recibía 429 justo cuando quería cambiar la contraseña. La clave es `req.sesionId`, que `requireAuth` calcula como hash del token (nunca el token). No sumar un tope por usuario de respaldo: devolvería el bloqueo.
+    - Solo cuentan los pedidos con `res.locals.actualIncorrecta` (`requestWasSuccessful`). Una nueva rechazada (política o filtrada) no revela nada de la actual y no tiene que bloquear a quien la sabe. El intento se suma antes del controlador igual que con `skipSuccessfulRequests`: sin carrera.
+    - Tests en `tests/limitadorCambioPassword.test.js` (Express real, dos sesiones del mismo usuario).
   - `/marcas/bulk`: 10 importaciones por hora por USUARIO (`keyGenerator` con `req.userId`). Va después de `requireAuth` en la ruta, porque necesita `req.userId`.
   - `/boletines/marcas`: 60 pedidos por minuto por USUARIO (`limitadorBoletines`, también después de `requireAuth`). B2 de la tercera revisión: el límite general por IP dejaba pasar 500 de golpe, y con el pool de 10 conexiones de knex eso hacía esperar a todos.
   - Toda la API: 500 cada 15 min por IP.
@@ -112,6 +116,13 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - `POST /register` — valida con `validarRegistro` → `revisarFiltrada` → hashea con bcrypt (`COSTO_BCRYPT` = 12) → inserta en `login` y `users` en una transacción → 200 con el usuario. 400 `{ error, errores }` si no valida; 400 `{ error }` genérico si el email ya existe. No devuelve token: el usuario después inicia sesión.
 - `POST /signin` — normaliza el email, compara con bcrypt y devuelve `{ token, user }` (user con columnas explícitas: id, name, email, joined). Cualquier falla da 400 con el mismo mensaje (`Usuario o contraseña incorrectos.`). Si el email no existe, compara igual contra un hash de relleno, para que la respuesta tarde lo mismo y no se pueda averiguar qué emails están registrados midiendo tiempos. Medido: 167 ms en los dos casos.
 - `GET /me` — el usuario logueado (sale del token). Reemplazó a `GET /profile/:id`, que devolvía cualquier usuario por id.
+- `PATCH /me` con `{ name }` — cambia el nombre (`validarNombre`, la misma regla que el registro: 1-100 caracteres, sin caracteres de control ni de formato invisibles como U+202E). 200 con el usuario (columnas explícitas); 400 `{ error, errores: { name } }`. Cualquier otro campo del cuerpo se ignora: el email no se cambia (es la identidad de la cuenta, está en `login` y en `users`, y cambiarlo pediría confirmar el correo nuevo).
+- `POST /me/password` con `{ currentPassword, newPassword }` — cambia la contraseña. 200 `{ ok: true }`; 400 `{ error, errores }` con `currentPassword` o `newPassword`.
+  - Pide la actual aunque haya token: sin eso, un token robado (una computadora que quedó abierta, un XSS) alcanzaba para quedarse con la cuenta para siempre. Con eso, solo dura lo que le queda al token.
+  - Orden: primero la política sobre la nueva (síncrona, usa el nombre y el email de la base, no del cliente), después bcrypt contra la actual (tope de 1024 caracteres, como `/signin`), y al final `revisarFiltrada`. Así un intento con la actual equivocada no consulta a HIBP.
+  - Hashea con `COSTO_BCRYPT` y actualiza `login` por el email del usuario del token.
+  - Las otras sesiones abiertas NO se cierran: siguen valiendo hasta que vence su token. Ver I3 en el backlog.
+  - Tests en `tests/me.test.js` (base falsa y un `fetch` global falso que hace de HIBP).
 
 ### Marcas (`controllers/marcas.js`)
 - `GET /marcas` — array de marcas del usuario, ordenadas por `fecha_solicitud` desc.
@@ -150,7 +161,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 
 ## Validación de registro e inicio de sesión
 - `utils/authValidation.js` es COPIA de `src/utils/authValidation.js` del frontend. Única diferencia: el comentario del encabezado.
-- Valida tipos: si llega algo que no es texto, se trata como vacío. Email: `trim().toLowerCase()`, formato `algo@algo.algo`, máximo 254. Nombre: 1-100 (la columna es `varchar(100)`). La contraseña no se recorta.
+- Valida tipos: si llega algo que no es texto, se trata como vacío. Email: `trim().toLowerCase()`, formato `algo@algo.algo`, máximo 254. Nombre: 1-100 (la columna es `varchar(100)`), sin `p{Cc}` ni `p{Cf}` (el carácter nulo daba 500 en Postgres; U+202E da vuelta el texto y sirve para disfrazar un nombre). La contraseña no se recorta.
 - Política de contraseñas (noviembre 2026, recomendación de Case según NIST SP 800-63B-4 y OWASP ASVS 5.0):
   - Mínimo 15 caracteres reales: se cuentan con `contarCaracteres` (`[...texto].length`), no con `.length`, porque un emoji son 2 unidades UTF-16. NIST pide 15 cuando la contraseña es el único factor. Si algún día hay 2FA, se puede revisar.
   - Máximo 72 BYTES, porque bcrypt ignora en silencio lo que sigue (comprobado).
@@ -179,7 +190,9 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
     - `login_demorado`: el límite por cuenta frenó el intento.
     - `registro_ok`.
     - `registro_rechazado`, con `motivo`: `validacion` (con los `campos`), `password_filtrada` o `duplicado`.
-    - `limite_superado`, con `limitador`: `login`, `registro`, `importacion`, `boletines` o `general`. Se registra el primero de cada limitador e IP (o usuario) y después a lo sumo uno por minuto, con `frenados`, para que un ataque no llene el log.
+    - `password_cambiada`, con `usuario`.
+    - `password_cambio_rechazado`, con `motivo`: `actual_incorrecta` (varios seguidos sugieren un token robado probando contraseñas) o `password_filtrada`.
+    - `limite_superado`, con `limitador`: `login`, `registro`, `cambio_password`, `importacion`, `boletines` o `general`. Se registra el primero de cada limitador e IP (o usuario) y después a lo sumo uno por minuto, con `frenados`, para que un ataque no llene el log.
   - El email NUNCA va en claro: va como `cuenta`, un HMAC-SHA256 truncado con una clave derivada de `JWT_SECRET` (rótulo "eventos"). Es estable por email, para cruzar eventos, pero no se puede revertir probando emails conocidos, como pasaría con un SHA-256 común. Si cambia `JWT_SECRET`, cambian los códigos. Para saber qué cuenta es un código: `codigoDeCuenta(email)` con el email sospechado.
   - Nunca contraseñas ni tokens. La IP va tal cual: es lo que permite ver de dónde viene un ataque.
   - Durante `npm test` no se escribe (Node define `NODE_TEST_CONTEXT`); los tests del registro pasan su propia función `escribir`. Tests en `tests/eventos.test.js`.
@@ -199,15 +212,11 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Mensajes de commit: cortos, una línea, minúscula, sin punto final, en español.
 
 ## Pendiente (backlog activo)
-- Agregar columna `avatar_url` a `users`.
-- Endpoint para actualizar perfil (nombre + foto).
-- Endpoint para cambiar contraseña (requiere verificar la contraseña actual contra `login`).
 - Roles y permisos: admin vs usuario regular.
 - Seguridad, tercera revisión de Case (noviembre 2026): resuelta completa (A1, M1 a M4, B1 a B6, el `maxLength` del filtro, la búsqueda de Boletines por POST y el registro de eventos de seguridad).
 - Seguridad, de la segunda revisión de Case falta:
-  - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`).
+  - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`). Ahora pesa más: cambiar la contraseña no cierra las otras sesiones, y quien la cambia porque sospecha un robo espera justamente eso. Diseño propuesto por Case: columna `users.token_version int not null default 0` y claim `tv` en el JWT. `POST /me/password` lo incrementa en la misma transacción que el hash y devuelve un token nuevo para la sesión actual (el evento `storage` lo pasa a las otras pestañas); da gratis "Cerrar sesión en todos lados". En `requireAuth`, caché en memoria `userId -> tv` con TTL de 30-60 s que el propio handler actualiza (evita una consulta a Neon por pedido; con más de una instancia, el TTL pasa a ser la ventana de revocación). Mejor `tv` que comparar `iat` con `password_changed_at` (el `iat` es por segundo). Si el usuario no existe, 401. Al hacerlo, sacar la segunda frase del mensaje de éxito en `Profile.jsx` del frontend.
 - Contraseñas, lo que falta de la política recomendada por Case (noviembre 2026), para cuando se hagan el cambio de contraseña, los roles y la invitación de usuarios:
-  - Endpoint de cambio de contraseña con las mismas reglas + `revisarFiltrada`, verificando la actual.
   - Cambio obligatorio para quien tenga una contraseña que no cumpla la política: en `/signin`, después de validar, marcar `debe_cambiar_password` (columna nueva) y dejar ir solo a la pantalla de cambio. No bloquear a nadie de golpe.
   - Cuentas creadas por admin con link de invitación (token de un solo uso, guardado como hash, vence en 24-72 h): el admin nunca elige la contraseña de otro.
   - Normalizar con `password.normalize('NFKC')` antes de hashear y comparar (en signin, probar normalizada y si falla la cruda, y re-hashear).

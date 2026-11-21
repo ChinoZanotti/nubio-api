@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { verificarToken } from '../utils/token.js'
 
 // Middleware: corre ANTES del controlador. Si el pedido trae un token válido
@@ -16,5 +17,9 @@ export function requireAuth(req, res, next) {
     }
 
     req.userId = userId
+    // Id de ESTA sesión: un hash del token, nunca el token (si llegara a un
+    // log, no serviría para entrar). Lo usan los limitadores que tienen que
+    // contar por sesión y no por usuario (ver limitadorCambioPassword).
+    req.sesionId = createHash('sha256').update(token).digest('base64url').slice(0, 16)
     next()
 }

@@ -71,6 +71,32 @@ export const limitadorRegistro = limitador('registro', {
     message: { error: 'Demasiados registros desde esta conexión. Probá de nuevo en una hora.' },
 })
 
+// Cambio de contraseña: quien tenga un token robado podría usar esta ruta para
+// adivinar la contraseña actual (cada intento la compara con bcrypt). 5 fallos
+// cada 15 minutos alcanzan para equivocarse al tipear y frenan la fuerza bruta.
+//
+// Por SESIÓN (req.sesionId), no por usuario (revisión de Case de Mi cuenta,
+// hallazgo medio): con la clave por usuario, el atacante gastaba los 5
+// intentos con su token y la víctima recibía 429 justo cuando quería cambiar
+// la contraseña por sospechar un robo. Ahora cada sesión tiene su contador.
+// No se suma un tope por usuario "de respaldo": volvería a dejar que el
+// atacante bloquee a la víctima.
+//
+// Solo cuenta cuando la contraseña ACTUAL estuvo mal (el controlador lo marca
+// en res.locals.actualIncorrecta). Una nueva rechazada por la política o por
+// filtrada no revela nada de la actual y no tiene que bloquear a quien la
+// sabe. Igual que skipSuccessfulRequests a secas, el intento se suma ANTES del
+// controlador y se resta al terminar: los pedidos en paralelo no se cuelan.
+// Tiene que ir DESPUÉS de requireAuth en la ruta: usa req.userId y req.sesionId.
+export const limitadorCambioPassword = limitador('cambio_password', {
+    windowMs: QUINCE_MINUTOS,
+    limit: 5,
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (req, res) => !res.locals.actualIncorrecta,
+    keyGenerator: (req) => `sesion:${req.userId}:${req.sesionId}`,
+    message: { error: 'Demasiados intentos fallidos. Esperá 15 minutos y volvé a probar.' },
+})
+
 // Importaciones: por USUARIO, no por IP. Cada importación encola hasta 1000
 // marcas para el motor; con el límite por IP, alguien con varias cuentas o
 // varias IPs podía mandar cientos por hora. 10 por hora alcanza para un uso
