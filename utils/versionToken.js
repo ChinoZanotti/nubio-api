@@ -1,0 +1,60 @@
+// Versión vigente de las sesiones de cada usuario (users.token_version), con
+// un caché en memoria para no consultar la base en cada pedido.
+//
+// Por qué: un JWT vale hasta que vence (8 h) y no se puede "borrar". Para que
+// cambiar la contraseña cierre las demás sesiones, cada token lleva la versión
+// con la que se emitió (claim `tv`) y requireAuth la compara con la de la
+// base. Al cambiar la contraseña la versión sube y los tokens viejos dejan de
+// coincidir. (I3 de la segunda revisión de Case; diseño propuesto por Case.)
+//
+// El caché: sin él, cada pedido autenticado sumaría un SELECT a Neon (pool de
+// 10 conexiones; Boletines llega a 60 pedidos por minuto por usuario). Con él,
+// a lo sumo uno por usuario cada TTL_MS.
+// - Lo que cambia la API (handleCambiarPassword) actualiza el caché al toque
+//   con `recordar`: la revocación es inmediata.
+// - El TTL solo importa para cambios hechos por fuera de la API (un UPDATE a
+//   mano en Neon): tardan hasta TTL_MS en notarse.
+// - Vive en memoria y alcanza con una sola instancia en Render. Con más de una,
+//   las otras se enteran recién al vencer el TTL: ese pasa a ser el tiempo de
+//   revocación. Para que siga siendo inmediata, LISTEN/NOTIFY de Postgres o Redis.
+
+const TTL_MS = 30 * 1000
+// Tope de usuarios en el caché: al pasarlo se descarta el más viejo (un Map
+// recuerda el orden de inserción). Sobra para los usuarios reales de Nubio.
+const MAX_ENTRADAS = 10_000
+
+const cache = new Map() // userId -> { tv, hasta (ms) }
+
+// Guarda la versión de un usuario. NUNCA la baja: las versiones solo suben.
+// Importa por esta carrera: un pedido consulta la base y lee 0; mientras
+// espera, otro cambia la contraseña y guarda 1; llega la respuesta del primero
+// y, si pisara, volvería a 0 y los tokens revocados valdrían 30 s más.
+export function recordar(userId, tv, ahora = Date.now()) {
+    const previo = cache.get(userId)
+    if (previo && previo.tv > tv) return
+    cache.delete(userId)
+    cache.set(userId, { tv, hasta: ahora + TTL_MS })
+    if (cache.size > MAX_ENTRADAS) cache.delete(cache.keys().next().value)
+}
+
+// Devuelve la token_version del usuario, o null si el usuario ya no existe.
+// `ahora` se puede pasar en los tests para no depender del reloj real.
+export async function versionVigente(db, userId, ahora = Date.now()) {
+    const enCache = cache.get(userId)
+    if (enCache && enCache.hasta > ahora) return enCache.tv
+
+    const fila = await db('users').select('token_version').where({ id: userId }).first()
+    if (!fila) {
+        cache.delete(userId)
+        return null
+    }
+    recordar(userId, fila.token_version, ahora)
+    // Lo que quedó en el caché, no lo leído: si mientras tanto alguien subió
+    // la versión, gana la nueva (ver recordar).
+    return cache.get(userId).tv
+}
+
+// Solo para los tests.
+export function reiniciarVersiones() {
+    cache.clear()
+}

@@ -23,24 +23,35 @@ export function verificarConfiguracion() {
     secreto()
 }
 
-// El token lleva solo el id del usuario ("sub" = subject, el estándar dice que
-// es un string). No pongas datos sensibles: el contenido de un JWT NO está
-// cifrado, cualquiera lo lee en jwt.io. La firma solo garantiza que no se cambió.
-export function firmarToken(userId) {
-    return jwt.sign({}, secreto(), {
+// El token lleva el id del usuario ("sub" = subject, el estándar dice que es
+// un string) y la versión de sus sesiones ("tv", ver sql/008_token_version.sql
+// y utils/versionToken.js). No pongas datos sensibles: el contenido de un JWT
+// NO está cifrado, cualquiera lo lee en jwt.io. La firma solo garantiza que no
+// se cambió.
+export function firmarToken(userId, tokenVersion) {
+    if (!Number.isInteger(tokenVersion) || tokenVersion < 0) {
+        throw new Error('firmarToken necesita la token_version del usuario.')
+    }
+    return jwt.sign({ tv: tokenVersion }, secreto(), {
         subject: String(userId),
         algorithm: ALGORITMO,
         expiresIn: DURACION,
     })
 }
 
-// Devuelve el id del usuario o null si el token es inválido, está vencido
-// o fue modificado (la firma no coincide).
+// Devuelve { userId, tv } o null si el token es inválido, está vencido o fue
+// modificado (la firma no coincide). Que la versión siga vigente lo decide
+// requireAuth, que es el que consulta la base.
+// Sin "tv" se lee 0: son los tokens emitidos antes de la columna, que siguen
+// valiendo hasta que la persona cambie la contraseña (o venzan, 8 h).
 export function verificarToken(token) {
     try {
         const payload = jwt.verify(token, secreto(), { algorithms: [ALGORITMO] })
-        const id = Number(payload.sub)
-        return Number.isInteger(id) && id > 0 ? id : null
+        const userId = Number(payload.sub)
+        // 'in' y no ??: un tv: null no es "falta", es un valor inválido.
+        const tv = 'tv' in payload ? payload.tv : 0
+        if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(tv) || tv < 0) return null
+        return { userId, tv }
     } catch {
         return null
     }

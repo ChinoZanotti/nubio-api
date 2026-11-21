@@ -26,7 +26,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 
 ### Tablas
 - `login` (id, hash, email).
-- `users` (id, name, email, joined). La columna `marcas` (contador) se eliminó: la cantidad de marcas sale de un `COUNT` sobre la tabla `marcas`. No hay `avatar_url`: Nubio no tiene foto de perfil (decisión de noviembre 2026, ver el CLAUDE.md del frontend).
+- `users` (id, name, email, joined, token_version). La columna `marcas` (contador) se eliminó: la cantidad de marcas sale de un `COUNT` sobre la tabla `marcas`. No hay `avatar_url`: Nubio no tiene foto de perfil (decisión de noviembre 2026, ver el CLAUDE.md del frontend). `token_version` (`sql/008_token_version.sql`) es la versión de las sesiones: nunca sale hacia el cliente (ver Autenticación).
 - `marcas` (creada con `sql/001_marcas.sql`):
   - `id` SERIAL PK
   - `user_id` INTEGER NOT NULL → `users(id)` ON DELETE CASCADE
@@ -82,9 +82,16 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Al final de todas las rutas van `rutaNoEncontrada` (404 JSON) y `manejarErrores` (`middleware/errores.js`). JSON mal formado → 400, body de más de 1 MB → 413, cualquier otro → 500 genérico. La API responde siempre JSON y nunca manda stack traces, sea cual sea `NODE_ENV`. Antes, un JSON mal formado devolvía una página HTML con el stack completo.
 
 ## Autenticación (JWT)
-- `POST /signin` devuelve `{ token, user }`. El token es un JWT HS256 firmado con `JWT_SECRET`, con `sub` = id del usuario, que vence a las 8 horas (`utils/token.js`). El payload no está cifrado: no poner datos sensibles.
+- `POST /signin` devuelve `{ token, user }`. El token es un JWT HS256 firmado con `JWT_SECRET`, con `sub` = id del usuario y `tv` = su `token_version`, que vence a las 8 horas (`utils/token.js`). El payload no está cifrado: no poner datos sensibles.
 - `JWT_SECRET` es obligatorio (mínimo 32 caracteres) y el servidor no arranca sin él. En local va en `.env`; en Render, en el dashboard, con un valor distinto. Generarlo con `node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"`. Cambiarlo invalida todas las sesiones abiertas.
-- `middleware/requireAuth.js` lee `Authorization: Bearer <token>`. Si es válido, pone `req.userId` y sigue. Si no, responde 401 `{ error }`.
+- `middleware/requireAuth.js` exporta `crearRequireAuth(db)`; `server.js` arma `const requireAuth = crearRequireAuth(db)`. Lee `Authorization: Bearer <token>`, verifica la firma y además que el `tv` del token sea la `token_version` vigente del usuario. Si todo da, pone `req.userId` y `req.sesionId` (hash del token, para limitadores por sesión) y sigue. Si no, 401 `{ error }`: "Tu sesión venció" (firma o vencimiento) o "Tu sesión se cerró" (versión vieja o usuario que ya no existe). Si la base falla, 500: nunca deja pasar sin saber.
+- **Revocación de sesiones** (I3 de la segunda revisión, diseño de Case, noviembre 2026): un JWT no se puede borrar, así que cada token lleva la versión con la que se emitió. `POST /me/password` sube `users.token_version` en la misma transacción que el hash: todos los tokens viejos dan 401, y la sesión que hizo el cambio recibe uno nuevo.
+  - `utils/versionToken.js`: caché en memoria `userId -> { tv, hasta }` con TTL de 30 s, para no consultar Neon en cada pedido (a lo sumo un SELECT por usuario cada 30 s). `recordar` lo actualiza al toque cuando la API cambia la versión: la revocación es inmediata. El TTL solo cuenta para cambios hechos a mano en la base.
+  - `recordar` nunca baja una versión: una consulta lenta que leyó la vieja no puede pisar la nueva (si no, los tokens revocados valdrían 30 s más).
+  - Tokens sin `tv` (emitidos antes de la columna) se leen como 0: nadie perdió la sesión al deployar. Un `tv` que no es entero >= 0 se rechaza. `firmarToken` no firma sin versión.
+  - Vive en memoria: alcanza con una sola instancia. Con más de una, el TTL pasa a ser el tiempo de revocación en las otras; para que siga siendo inmediata, `LISTEN/NOTIFY` de Postgres o Redis.
+  - Se eligió `tv` y no comparar el `iat` con un `password_changed_at`: el `iat` es por segundo y un token del mismo segundo que el cambio quedaba en zona gris.
+  - Con lo mismo sale "Cerrar sesión en todos lados" (subir la versión sin cambiar la contraseña) y la baja de usuarios (un usuario borrado ya da 401).
 - **Regla:** toda ruta que maneje datos lleva `requireAuth`, y los controladores toman el usuario SOLO de `req.userId`. Nunca de `req.body.user_id` ni de `req.query.user_id`: si el cliente los manda, se ignoran.
 - Públicas: `GET /`, `POST /signin`, `POST /register`. Todo lo demás está protegido.
 - Rate limiting (`middleware/rateLimit.js`, `express-rate-limit`, contadores en memoria). Responde 429 `{ error }`:
@@ -110,18 +117,18 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - `cors()` va antes del limitador general, para que el 429 lleve headers CORS y el frontend pueda leer el mensaje.
   - `app.set('trust proxy', 3)`: en Render hay 3 proxies (Cloudflare → balanceador de Render → proxy local), medido en noviembre de 2026. Con 1, todos los usuarios compartían la IP del balanceador y el límite los bloqueaba a todos juntos. Se puede pisar con la variable `TRUST_PROXY`. Nunca `true` ni un número mayor: el cliente podría inventar IPs y saltarse el límite.
   - Para volver a medir si Render cambia: endpoint temporal que devuelva `req.ip`, `x-forwarded-for` y `cf-connecting-ip`. `TRUST_PROXY` es la cantidad de IPs que hay a la derecha de la del cliente en `x-forwarded-for`, más 1 por el proxy local (socket `::1`). Comprobar que `req.ip` coincida con `cf-connecting-ip`. Borrar el endpoint después.
-- Tests: `tests/token.test.js` (token modificado, otro secreto, `alg: none`, vencido, middleware).
+- Tests: `tests/token.test.js` (token modificado, otro secreto, `alg: none`, vencido, `tv` faltante o inválido, middleware con versión vieja, usuario borrado, caché y su carrera).
 
 ## Rutas existentes
 - `POST /register` — valida con `validarRegistro` → `revisarFiltrada` → hashea con bcrypt (`COSTO_BCRYPT` = 12) → inserta en `login` y `users` en una transacción → 200 con el usuario. 400 `{ error, errores }` si no valida; 400 `{ error }` genérico si el email ya existe. No devuelve token: el usuario después inicia sesión.
 - `POST /signin` — normaliza el email, compara con bcrypt y devuelve `{ token, user }` (user con columnas explícitas: id, name, email, joined). Cualquier falla da 400 con el mismo mensaje (`Usuario o contraseña incorrectos.`). Si el email no existe, compara igual contra un hash de relleno, para que la respuesta tarde lo mismo y no se pueda averiguar qué emails están registrados midiendo tiempos. Medido: 167 ms en los dos casos.
 - `GET /me` — el usuario logueado (sale del token). Reemplazó a `GET /profile/:id`, que devolvía cualquier usuario por id.
 - `PATCH /me` con `{ name }` — cambia el nombre (`validarNombre`, la misma regla que el registro: 1-100 caracteres, sin caracteres de control ni de formato invisibles como U+202E). 200 con el usuario (columnas explícitas); 400 `{ error, errores: { name } }`. Cualquier otro campo del cuerpo se ignora: el email no se cambia (es la identidad de la cuenta, está en `login` y en `users`, y cambiarlo pediría confirmar el correo nuevo).
-- `POST /me/password` con `{ currentPassword, newPassword }` — cambia la contraseña. 200 `{ ok: true }`; 400 `{ error, errores }` con `currentPassword` o `newPassword`.
+- `POST /me/password` con `{ currentPassword, newPassword }` — cambia la contraseña. 200 `{ ok: true, token }`; 400 `{ error, errores }` con `currentPassword` o `newPassword`.
   - Pide la actual aunque haya token: sin eso, un token robado (una computadora que quedó abierta, un XSS) alcanzaba para quedarse con la cuenta para siempre. Con eso, solo dura lo que le queda al token.
   - Orden: primero la política sobre la nueva (síncrona, usa el nombre y el email de la base, no del cliente), después bcrypt contra la actual (tope de 1024 caracteres, como `/signin`), y al final `revisarFiltrada`. Así un intento con la actual equivocada no consulta a HIBP.
   - Hashea con `COSTO_BCRYPT` y actualiza `login` por el email del usuario del token.
-  - Las otras sesiones abiertas NO se cierran: siguen valiendo hasta que vence su token. Ver I3 en el backlog.
+  - Cierra todas las demás sesiones: sube `token_version` en la misma transacción que el hash, avisa al caché con `recordar` y responde `{ ok: true, token }` con un token nuevo para la sesión que hizo el cambio. Un intento rechazado no cierra nada.
   - Tests en `tests/me.test.js` (base falsa y un `fetch` global falso que hace de HIBP).
 
 ### Marcas (`controllers/marcas.js`)
@@ -214,8 +221,8 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 ## Pendiente (backlog activo)
 - Roles y permisos: admin vs usuario regular.
 - Seguridad, tercera revisión de Case (noviembre 2026): resuelta completa (A1, M1 a M4, B1 a B6, el `maxLength` del filtro, la búsqueda de Boletines por POST y el registro de eventos de seguridad).
-- Seguridad, de la segunda revisión de Case falta:
-  - I3: el JWT no se puede revocar. Con los roles y la baja de usuarios, `requireAuth` tiene que verificar que el usuario siga activo (o usar `token_version`). Ahora pesa más: cambiar la contraseña no cierra las otras sesiones, y quien la cambia porque sospecha un robo espera justamente eso. Diseño propuesto por Case: columna `users.token_version int not null default 0` y claim `tv` en el JWT. `POST /me/password` lo incrementa en la misma transacción que el hash y devuelve un token nuevo para la sesión actual (el evento `storage` lo pasa a las otras pestañas); da gratis "Cerrar sesión en todos lados". En `requireAuth`, caché en memoria `userId -> tv` con TTL de 30-60 s que el propio handler actualiza (evita una consulta a Neon por pedido; con más de una instancia, el TTL pasa a ser la ventana de revocación). Mejor `tv` que comparar `iat` con `password_changed_at` (el `iat` es por segundo). Si el usuario no existe, 401. Al hacerlo, sacar la segunda frase del mensaje de éxito en `Profile.jsx` del frontend.
+- Seguridad, segunda revisión de Case: resuelta completa (I3, la revocación de sesiones, se cerró en noviembre de 2026 con `token_version`).
+- "Cerrar sesión en todos lados" en Mi cuenta: subir `token_version` sin cambiar la contraseña. El mecanismo ya existe; falta la ruta y el botón. Decidir si pide la contraseña actual (sin ella, un token robado podría sacar a la víctima de todas sus sesiones).
 - Contraseñas, lo que falta de la política recomendada por Case (noviembre 2026), para cuando se hagan el cambio de contraseña, los roles y la invitación de usuarios:
   - Cambio obligatorio para quien tenga una contraseña que no cumpla la política: en `/signin`, después de validar, marcar `debe_cambiar_password` (columna nueva) y dejar ir solo a la pantalla de cambio. No bloquear a nadie de golpe.
   - Cuentas creadas por admin con link de invitación (token de un solo uso, guardado como hash, vence en 24-72 h): el admin nunca elige la contraseña de otro.

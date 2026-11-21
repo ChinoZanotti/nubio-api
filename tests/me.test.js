@@ -5,6 +5,8 @@ import bcrypt from 'bcrypt'
 
 process.env.JWT_SECRET = 'secreto-de-prueba-con-mas-de-32-caracteres!!'
 const { handleUpdateMe, handleCambiarPassword } = await import('../controllers/me.js')
+const { verificarToken } = await import('../utils/token.js')
+const { versionVigente, reiniciarVersiones } = await import('../utils/versionToken.js')
 
 // --- Have I Been Pwned falso ---
 // revisarFiltrada usa el fetch global si no le pasan otro. Lo reemplazamos para
@@ -30,11 +32,12 @@ beforeEach(() => {
     filtradas.clear()
     tablas = {
         login: [{ email: 'ana@estudio.com', hash: hashActual }],
-        users: [{ id: 7, name: 'Ana Pérez', email: 'ana@estudio.com', joined: '2026-01-01' }],
+        users: [{ id: 7, name: 'Ana Pérez', email: 'ana@estudio.com', joined: '2026-01-01', token_version: 0 }],
     }
+    reiniciarVersiones()
 })
 function dbFalsa() {
-    return (tabla) => ({
+    const db = (tabla) => ({
         select() { return this },
         where(filtro) {
             this.filas = tablas[tabla].filter((f) => Object.entries(filtro).every(([k, v]) => f[k] === v))
@@ -44,10 +47,26 @@ function dbFalsa() {
         update(cambios) {
             this.filas.forEach((f) => Object.assign(f, cambios))
             const promesa = Promise.resolve(this.filas.length)
-            promesa.returning = () => Promise.resolve(this.filas.map((f) => ({ ...f })))
+            // Como Knex: devuelve solo las columnas pedidas
+            promesa.returning = (cols) => Promise.resolve(this.filas.map((f) => Object.fromEntries(cols.map((c) => [c, f[c]]))))
             return promesa
         },
+        increment(columna, n) {
+            this.filas.forEach((f) => { f[columna] += n })
+            return { returning: (col) => Promise.resolve(this.filas.map((f) => ({ [col]: f[col] }))) }
+        },
     })
+    // Transacción de mentira: si la función falla, se restauran las tablas.
+    db.transaction = async (fn) => {
+        const copia = structuredClone(tablas)
+        try {
+            return await fn(db)
+        } catch (err) {
+            Object.assign(tablas, copia)
+            throw err
+        }
+    }
+    return db
 }
 function resFalsa() {
     return { codigo: 200, locals: {}, status(c) { this.codigo = c; return this }, json(b) { this.cuerpo = b; return this } }
@@ -109,6 +128,21 @@ test('cambia la contraseña: la nueva entra con costo 12 y la vieja ya no', asyn
     assert.equal(bcrypt.getRounds(hash), 12)
     assert.ok(await bcrypt.compare(NUEVA, hash))
     assert.equal(await bcrypt.compare(ACTUAL, hash), false)
+})
+
+test('al cambiarla sube token_version y devuelve un token nuevo con esa versión', async () => {
+    const res = await cambiar({ currentPassword: ACTUAL, newPassword: NUEVA })
+    assert.equal(tablas.users[0].token_version, 1)
+    assert.deepEqual(verificarToken(res.cuerpo.token), { userId: 7, tv: 1 })
+    // Y el caché ya lo sabe: los tokens viejos (tv 0) dan 401 desde ahora
+    assert.equal(await versionVigente(() => { throw new Error('no debería consultar la base') }, 7), 1)
+})
+
+test('un intento rechazado no cierra las otras sesiones', async () => {
+    await cambiar({ currentPassword: 'no es la actual para nada', newPassword: NUEVA })
+    filtradas.add(NUEVA)
+    await cambiar({ currentPassword: ACTUAL, newPassword: NUEVA })
+    assert.equal(tablas.users[0].token_version, 0)
 })
 
 test('con la contraseña actual equivocada no cambia nada', async () => {

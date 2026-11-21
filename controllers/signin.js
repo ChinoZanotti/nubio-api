@@ -89,15 +89,17 @@ export const handleSignin = async (req, res, db, bcrypt) => {
 
         // Columnas explícitas: con select('*') cualquier columna que se agregue
         // a users en el futuro saldría sola hacia el cliente.
-        const user = await db('users')
-            .select('id', 'name', 'email', 'joined')
+        // token_version va al token, no al cliente: se separa de `user`.
+        const { token_version: tokenVersion, ...user } = await db('users')
+            .select('id', 'name', 'email', 'joined', 'token_version')
             .where({ email })
             .first()
 
         // El token es la "credencial" que el frontend manda en cada pedido.
         // Lo firma el servidor con JWT_SECRET: el cliente no lo puede fabricar
         // ni cambiarle el id adentro sin que la firma deje de coincidir.
-        res.json({ token: firmarToken(user.id), user })
+        // Lleva la versión vigente de las sesiones (ver utils/versionToken.js).
+        res.json({ token: firmarToken(user.id, tokenVersion), user })
     } catch (err) {
         registrarError('POST /signin', err)
         res.status(500).json({ error: 'Error en el servidor. Probá de nuevo en unos minutos.' })

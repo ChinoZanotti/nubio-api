@@ -5,6 +5,7 @@ import { validarRegistro, validarPassword, contarCaracteres, normalizarEmail } f
 
 process.env.JWT_SECRET = 'secreto-de-prueba-con-mas-de-32-caracteres!!'
 const { handleSignin } = await import('../controllers/signin.js')
+const { verificarToken } = await import('../utils/token.js')
 
 const valido = { name: 'Ana Pérez', email: 'ana@estudio.com', password: 'una-clave-larga' }
 
@@ -90,7 +91,7 @@ function dbFalsa(tablas) {
 function tablasNuevas() {
     return {
         login: [{ email: 'ana@estudio.com', hash }],
-        users: [{ id: 7, name: 'Ana', email: 'ana@estudio.com', joined: '2026-01-01' }],
+        users: [{ id: 7, name: 'Ana', email: 'ana@estudio.com', joined: '2026-01-01', token_version: 3 }],
     }
 }
 async function signin(body, tablas = tablasNuevas()) {
@@ -120,6 +121,12 @@ test('signin acepta el email con mayúsculas y espacios', async () => {
     assert.equal(res.codigo, 200)
     assert.equal(res.cuerpo.user.id, 7)
     assert.ok(res.cuerpo.token)
+})
+
+test('signin firma el token con la token_version del usuario y no se la manda al cliente', async () => {
+    const res = await signin({ email: 'ana@estudio.com', password: 'una-clave-larga' })
+    assert.deepEqual(verificarToken(res.cuerpo.token), { userId: 7, tv: 3 })
+    assert.equal('token_version' in res.cuerpo.user, false)
 })
 
 test('signin: email inexistente y contraseña mala dan el MISMO error', async () => {

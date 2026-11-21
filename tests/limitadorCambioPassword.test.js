@@ -4,12 +4,17 @@ import express from 'express'
 import jwt from 'jsonwebtoken'
 
 process.env.JWT_SECRET = 'secreto-de-prueba-con-mas-de-32-caracteres!!'
-const { requireAuth } = await import('../middleware/requireAuth.js')
+const { crearRequireAuth } = await import('../middleware/requireAuth.js')
 const { limitadorCambioPassword } = await import('../middleware/rateLimit.js')
 
 // Express de verdad, con requireAuth y el limitador reales. El controlador es
 // de mentira: responde 400 y marca actualIncorrecta si el cuerpo lo pide, como
 // hace handleCambiarPassword cuando la actual está mal.
+// Base falsa: el usuario 7 existe con token_version 0 (los tokens de abajo no
+// llevan "tv", que se lee como 0).
+const dbFalsa = () => ({ select() { return this }, where() { return this }, first: async () => ({ token_version: 0 }) })
+const requireAuth = crearRequireAuth(dbFalsa)
+
 const app = express()
 app.use(express.json())
 app.post('/me/password', requireAuth, limitadorCambioPassword, (req, res) => {

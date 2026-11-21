@@ -5,7 +5,7 @@ import { crearDb } from './db.js'
 import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleMe, handleUpdateMe, handleCambiarPassword } from './controllers/me.js'
-import { requireAuth } from './middleware/requireAuth.js'
+import { crearRequireAuth } from './middleware/requireAuth.js'
 import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorImportacion, limitadorBoletines, limitadorCambioPassword } from './middleware/rateLimit.js'
 import { corsNubio, helmetNubio } from './middleware/seguridad.js'
 import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
@@ -19,6 +19,10 @@ verificarConfiguracion()
 
 // Conexión a Postgres: config compartida con los scripts (ver db.js).
 const db = crearDb()
+
+// requireAuth necesita la base: además de la firma del token, revisa que su
+// versión siga vigente (que no se haya cambiado la contraseña después).
+const requireAuth = crearRequireAuth(db)
 
 const app = express()
 

@@ -3,6 +3,8 @@ import { revisarFiltrada, MENSAJE_FILTRADA } from '../utils/passwordFiltrada.js'
 import { registrarError } from '../utils/log.js'
 import { registrarEvento } from '../utils/eventos.js'
 import { COSTO_BCRYPT } from './register.js'
+import { firmarToken } from '../utils/token.js'
+import { recordar } from '../utils/versionToken.js'
 
 // Columnas que se le devuelven al cliente. Explícitas, como en signin: con
 // select('*') o returning('*') cualquier columna nueva de users saldría sola.
@@ -68,14 +70,18 @@ export const handleUpdateMe = async (req, res, db) => {
 // Por qué pide la actual aunque el pedido ya trae un token válido: el token
 // puede estar en manos de otro (una computadora que quedó abierta, un XSS).
 // Sin este paso, con el token alcanzaría para quedarse con la cuenta para
-// siempre. Con él, el token solo dura lo que le queda (como mucho 8 h).
+// siempre.
+//
+// Al cambiarla se cierran TODAS las otras sesiones: sube users.token_version
+// y los tokens viejos dejan de valer (utils/versionToken.js). La sesión que
+// hizo el cambio recibe un token nuevo en la respuesta ({ ok, token }).
 //
 // Orden: primero lo barato y sin secretos (formato de la nueva), después
 // bcrypt contra la actual, y al final Have I Been Pwned (servicio externo),
 // solo si todo lo demás pasó. Así un intento con la actual equivocada no
 // consulta a nadie de afuera.
 //
-// El limitador (limitadorCambioPassword, por usuario) frena a quien tenga el
+// El limitador (limitadorCambioPassword, por sesión) frena a quien tenga el
 // token y quiera usar esta ruta para adivinar la contraseña actual.
 export const handleCambiarPassword = async (req, res, db, bcrypt) => {
     const currentPassword = comoTexto(req.body?.currentPassword)
@@ -114,13 +120,27 @@ export const handleCambiarPassword = async (req, res, db, bcrypt) => {
         }
 
         const hash = await bcrypt.hash(newPassword, COSTO_BCRYPT)
-        const cambiadas = await db('login').where({ email: user.email }).update({ hash })
-        // No debería pasar (la fila se leyó arriba), pero si no se cambió nada,
-        // responder "ok" y registrar password_cambiada sería mentir.
-        if (cambiadas !== 1) throw new Error(`El update de login cambió ${cambiadas} filas`)
+        // En una transacción: la contraseña nueva y la versión de las sesiones
+        // cambian juntas o ninguna. Si la contraseña cambiara y la versión no,
+        // las sesiones robadas seguirían valiendo sin que nadie lo sepa.
+        const tokenVersion = await db.transaction(async (trx) => {
+            const cambiadas = await trx('login').where({ email: user.email }).update({ hash })
+            // No debería pasar (la fila se leyó arriba), pero si no se cambió
+            // nada, responder "ok" y registrar password_cambiada sería mentir.
+            if (cambiadas !== 1) throw new Error(`El update de login cambió ${cambiadas} filas`)
+            const [fila] = await trx('users')
+                .where({ id: req.userId })
+                .increment('token_version', 1)
+                .returning('token_version')
+            return fila.token_version
+        })
 
+        // Al caché enseguida: desde este momento, en este servidor, los tokens
+        // viejos de esta cuenta dan 401 (ver utils/versionToken.js).
+        recordar(req.userId, tokenVersion)
         registrarEvento('password_cambiada', { email: user.email, ip: req.ip, usuario: req.userId })
-        res.json({ ok: true })
+        // Token nuevo para la sesión que hizo el cambio: es la única que sigue.
+        res.json({ ok: true, token: firmarToken(req.userId, tokenVersion) })
     } catch (err) {
         registrarError('POST /me/password', err)
         res.status(500).json({ error: 'No se pudo cambiar la contraseña.' })
