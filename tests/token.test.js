@@ -133,10 +133,19 @@ test('el caché vuelve a consultar la base al vencer el TTL (30 s)', async () =>
     assert.equal(await versionVigente(db, 7, 31_000), 4)
 })
 
-test('el caché nunca baja una versión (carrera con una consulta lenta)', () => {
+test('dentro del TTL, el caché no baja una versión (carrera con una consulta lenta)', () => {
     // Una consulta leyó 0 de la base, pero mientras esperaba se cambió la
     // contraseña y se guardó 1. Cuando llega el 0, no tiene que pisar.
     recordar(7, 1)
     recordar(7, 0)
     return versionVigente((tabla) => dbFalsa(tabla), 7).then((tv) => assert.equal(tv, 1))
+})
+
+test('vencido el TTL, el caché acepta una versión MENOR de la base (restore de Neon)', async () => {
+    const db = (tabla) => dbFalsa(tabla)
+    versiones.set(7, 5)
+    await versionVigente(db, 7, 0)
+    versiones.set(7, 2) // la base volvió atrás
+    assert.equal(await versionVigente(db, 7, 10_000), 5) // dentro del TTL: todavía 5
+    assert.equal(await versionVigente(db, 7, 31_000), 2) // vencido: manda la base
 })

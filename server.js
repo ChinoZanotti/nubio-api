@@ -72,7 +72,7 @@ app.post('/register', limitadorRegistro, (req, res) => handleRegister(req, res, 
 
 app.get('/me', requireAuth, (req, res) => handleMe(req, res, db))
 app.patch('/me', requireAuth, (req, res) => handleUpdateMe(req, res, db))
-// El limitador va después de requireAuth: cuenta por usuario (req.userId).
+// El limitador va después de requireAuth: cuenta por sesión (req.sesionId).
 app.post('/me/password', requireAuth, limitadorCambioPassword, (req, res) => handleCambiarPassword(req, res, db, bcrypt))
 
 // Marcas

@@ -43,7 +43,8 @@ function dbFalsa() {
             this.filas = tablas[tabla].filter((f) => Object.entries(filtro).every(([k, v]) => f[k] === v))
             return this
         },
-        first() { return Promise.resolve(this.filas[0]) },
+        // Una copia, como Knex: lo leído no cambia si después cambia la tabla
+        first() { return Promise.resolve(this.filas[0] && { ...this.filas[0] }) },
         update(cambios) {
             this.filas.forEach((f) => Object.assign(f, cambios))
             const promesa = Promise.resolve(this.filas.length)
@@ -76,11 +77,30 @@ async function actualizar(body, userId = 7) {
     await handleUpdateMe({ body, userId }, res, dbFalsa())
     return res
 }
-async function cambiar(body, userId = 7) {
+async function cambiar(body, userId = 7, bcryptUsado = bcrypt) {
     const res = resFalsa()
-    await handleCambiarPassword({ body, userId, ip: '1.2.3.4' }, res, dbFalsa(), bcrypt)
+    await handleCambiarPassword({ body, userId, ip: '1.2.3.4' }, res, dbFalsa(), bcryptUsado)
     return res
 }
+
+test('dos cambios a la vez: gana el primero y el segundo recibe 409 sin pisarlo', async () => {
+    // Mientras este pedido compara la actual, otra sesión cambia la contraseña
+    // (hash nuevo y token_version 1).
+    const bcryptConCambioEnElMedio = {
+        ...bcrypt,
+        async compare(password, hash) {
+            const resultado = await bcrypt.compare(password, hash)
+            tablas.login[0].hash = 'hash-del-primer-cambio'
+            tablas.users[0].token_version = 1
+            return resultado
+        },
+    }
+    const res = await cambiar({ currentPassword: ACTUAL, newPassword: NUEVA }, 7, bcryptConCambioEnElMedio)
+    assert.equal(res.codigo, 409)
+    assert.equal(res.cuerpo.token, undefined)
+    assert.equal(tablas.login[0].hash, 'hash-del-primer-cambio')
+    assert.equal(tablas.users[0].token_version, 1)
+})
 
 // --- PATCH /me ---
 

@@ -25,13 +25,17 @@ const MAX_ENTRADAS = 10_000
 
 const cache = new Map() // userId -> { tv, hasta (ms) }
 
-// Guarda la versión de un usuario. NUNCA la baja: las versiones solo suben.
-// Importa por esta carrera: un pedido consulta la base y lee 0; mientras
+// Guarda la versión de un usuario. Mientras la entrada está vigente, NO la
+// baja. Importa por esta carrera: un pedido consulta la base y lee 0; mientras
 // espera, otro cambia la contraseña y guarda 1; llega la respuesta del primero
 // y, si pisara, volvería a 0 y los tokens revocados valdrían 30 s más.
+// Vencida, sí acepta una menor (revisión de Case de I3): si la versión baja
+// en la base (un restore de Neon, un UPDATE a mano), la base manda. Si no, el
+// usuario quedaba afuera hasta reiniciar el servidor: signin firmaba con la
+// versión de la base y requireAuth comparaba con la del caché.
 export function recordar(userId, tv, ahora = Date.now()) {
     const previo = cache.get(userId)
-    if (previo && previo.tv > tv) return
+    if (previo && previo.hasta > ahora && previo.tv > tv) return
     cache.delete(userId)
     cache.set(userId, { tv, hasta: ahora + TTL_MS })
     if (cache.size > MAX_ENTRADAS) cache.delete(cache.keys().next().value)

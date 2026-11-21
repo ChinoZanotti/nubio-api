@@ -48,7 +48,20 @@ export const handleSignin = async (req, res, db, bcrypt) => {
     registrarIntento(email)
 
     try {
-        const fila = await db('login').select('hash').where({ email }).first()
+        // Hash, usuario y token_version en UNA consulta, antes de bcrypt (revisión
+        // de Case de I3, hallazgo medio). Antes la versión se leía después de
+        // bcrypt (~250 ms): si en ese medio la dueña cambiaba la contraseña, un
+        // login con la contraseña VIEJA salía firmado con la versión NUEVA y
+        // sobrevivía al "cerrar todas las sesiones". Una sola sentencia ve la
+        // base en un único instante: la versión es la de ESE hash, y si la
+        // contraseña cambia después, el token nace revocado.
+        // Columnas explícitas: con select('*') cualquier columna nueva de users
+        // saldría sola hacia el cliente.
+        const fila = await db('login')
+            .join('users', 'users.email', 'login.email')
+            .select('login.hash', 'users.id', 'users.name', 'users.email', 'users.joined', 'users.token_version')
+            .where({ 'login.email': email })
+            .first()
 
         // Igualar tiempos: bcrypt tarda ~200-300 ms a propósito (costo 12). Si cuando el
         // email no existe respondiéramos sin correrlo, la respuesta sería mucho
@@ -81,19 +94,18 @@ export const handleSignin = async (req, res, db, bcrypt) => {
         if (bcrypt.getRounds(fila.hash) < COSTO_BCRYPT) {
             try {
                 const nuevo = await bcrypt.hash(password, COSTO_BCRYPT)
-                await db('login').where({ email }).update({ hash: nuevo })
+                // Solo si el hash sigue siendo el que se leyó (revisión de Case de
+                // I3). Si mientras tanto la persona cambió la contraseña, pisarlo
+                // volvería a poner la VIEJA. Si cambió, no se toca nada.
+                await db('login').where({ email, hash: fila.hash }).update({ hash: nuevo })
             } catch (err) {
                 registrarError('Rehash en signin', err)
             }
         }
 
-        // Columnas explícitas: con select('*') cualquier columna que se agregue
-        // a users en el futuro saldría sola hacia el cliente.
-        // token_version va al token, no al cliente: se separa de `user`.
-        const { token_version: tokenVersion, ...user } = await db('users')
-            .select('id', 'name', 'email', 'joined', 'token_version')
-            .where({ email })
-            .first()
+        // El hash y token_version no van al cliente: se separan de `user`.
+        // eslint-disable-next-line no-unused-vars
+        const { hash, token_version: tokenVersion, ...user } = fila
 
         // El token es la "credencial" que el frontend manda en cada pedido.
         // Lo firma el servidor con JWT_SECRET: el cliente no lo puede fabricar

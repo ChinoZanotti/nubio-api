@@ -81,11 +81,26 @@ test('normalizarEmail con algo que no es texto devuelve vacío', () => {
 // que signin recalcula los hashes de costo menor.
 const hash = await bcrypt.hash('una-clave-larga', 4)
 function dbFalsa(tablas) {
+    // where acepta { email }, { 'login.email': email } o { email, hash }.
+    // join('users', ...) une a cada fila de login la de users con su email.
     return (tabla) => ({
         select() { return this },
-        where(filtro) { this.fila = tablas[tabla].find((f) => f.email === filtro.email); return this },
-        first() { return Promise.resolve(this.fila) },
-        update(cambios) { Object.assign(this.fila, cambios); return Promise.resolve(1) },
+        join() { this.unir = true; return this },
+        where(filtro) {
+            const email = filtro.email ?? filtro['login.email']
+            this.fila = tablas[tabla].find((f) => f.email === email && (filtro.hash === undefined || f.hash === filtro.hash))
+            return this
+        },
+        first() {
+            if (!this.fila || !this.unir) return Promise.resolve(this.fila && { ...this.fila })
+            const user = tablas.users.find((u) => u.email === this.fila.email)
+            return Promise.resolve(user && { ...user, hash: this.fila.hash })
+        },
+        update(cambios) {
+            if (!this.fila) return Promise.resolve(0)
+            Object.assign(this.fila, cambios)
+            return Promise.resolve(1)
+        },
     })
 }
 function tablasNuevas() {
@@ -94,12 +109,46 @@ function tablasNuevas() {
         users: [{ id: 7, name: 'Ana', email: 'ana@estudio.com', joined: '2026-01-01', token_version: 3 }],
     }
 }
-async function signin(body, tablas = tablasNuevas()) {
+async function signin(body, tablas = tablasNuevas(), bcryptUsado = bcrypt) {
     const res = { status(c) { this.codigo = c; return this }, json(b) { this.cuerpo = b; return this } }
     res.codigo = 200
-    await handleSignin({ body }, res, dbFalsa(tablas), bcrypt)
+    await handleSignin({ body }, res, dbFalsa(tablas), bcryptUsado)
     return res
 }
+
+// Simula que la dueña cambia la contraseña MIENTRAS bcrypt compara (~250 ms):
+// la ventana de las carreras de la revisión de Case de I3.
+function bcryptConCambioEnElMedio(tablas) {
+    return {
+        ...bcrypt,
+        async compare(password, hash) {
+            const resultado = await bcrypt.compare(password, hash)
+            tablas.login[0].hash = 'hash-de-la-contraseña-nueva'
+            tablas.users[0].token_version += 1
+            return resultado
+        },
+    }
+}
+
+test('signin con la contraseña vieja durante un cambio: el token sale con la versión VIEJA', async () => {
+    const tablas = tablasNuevas()
+    const res = await signin({ email: 'ana@estudio.com', password: 'una-clave-larga' }, tablas, bcryptConCambioEnElMedio(tablas))
+    assert.equal(res.codigo, 200)
+    // La versión es la que se leyó junto con el hash (3), no la nueva (4):
+    // requireAuth lo rechaza apenas lo use.
+    assert.equal(verificarToken(res.cuerpo.token).tv, 3)
+})
+
+test('el rehash no pisa una contraseña que cambió mientras tanto', async () => {
+    const tablas = tablasNuevas() // hash de costo 4: signin intenta el rehash
+    await signin({ email: 'ana@estudio.com', password: 'una-clave-larga' }, tablas, bcryptConCambioEnElMedio(tablas))
+    assert.equal(tablas.login[0].hash, 'hash-de-la-contraseña-nueva')
+})
+
+test('signin no le manda el hash al cliente', async () => {
+    const res = await signin({ email: 'ana@estudio.com', password: 'una-clave-larga' })
+    assert.equal('hash' in res.cuerpo.user, false)
+})
 
 test('signin recalcula con costo 12 un hash viejo de costo menor', async () => {
     const tablas = tablasNuevas()

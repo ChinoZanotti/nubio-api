@@ -124,16 +124,27 @@ export const handleCambiarPassword = async (req, res, db, bcrypt) => {
         // cambian juntas o ninguna. Si la contraseña cambiara y la versión no,
         // las sesiones robadas seguirían valiendo sin que nadie lo sepa.
         const tokenVersion = await db.transaction(async (trx) => {
-            const cambiadas = await trx('login').where({ email: user.email }).update({ hash })
-            // No debería pasar (la fila se leyó arriba), pero si no se cambió
-            // nada, responder "ok" y registrar password_cambiada sería mentir.
+            // Solo si el hash sigue siendo el que se comparó con la actual
+            // (revisión de Case de I3). Con dos cambios a la vez (la dueña y un
+            // atacante que sabe la contraseña), antes ganaba el ÚLTIMO en
+            // terminar: el atacante podía pisar el cambio de la dueña. Ahora
+            // gana el primero y el otro recibe 409.
+            const cambiadas = await trx('login').where({ email: user.email, hash: fila.hash }).update({ hash })
+            if (cambiadas === 0) return null
             if (cambiadas !== 1) throw new Error(`El update de login cambió ${cambiadas} filas`)
-            const [fila] = await trx('users')
+            const [version] = await trx('users')
                 .where({ id: req.userId })
                 .increment('token_version', 1)
                 .returning('token_version')
-            return fila.token_version
+            return version.token_version
         })
+
+        // La contraseña cambió entre la comparación y el update: otra sesión la
+        // cambió primero, y con eso esta sesión ya quedó cerrada.
+        if (tokenVersion === null) {
+            registrarEvento('password_cambio_rechazado', { email: user.email, ip: req.ip, usuario: req.userId, motivo: 'cambio_simultaneo' })
+            return res.status(409).json({ error: 'Tu contraseña se cambió desde otra sesión mientras tanto. Volvé a iniciar sesión.' })
+        }
 
         // Al caché enseguida: desde este momento, en este servidor, los tokens
         // viejos de esta cuenta dan 401 (ver utils/versionToken.js).
