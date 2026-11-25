@@ -169,6 +169,8 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 
 ### Alertas (`controllers/alertas.js`)
 - `GET /alertas` — filas planas: datos de la alerta, de mi marca (`mi_denominacion`, `mi_clase_niza`, `mi_expediente`) y de la marca del boletín (mismos nombres que en `/boletines/marcas`), más `vence_oposicion` y `dias_habiles_restantes` (negativo si venció). Orden: nuevas primero, después por score.
+- `GET /alertas/resumen` — `{ nuevas, urgentes }` para el contador del menú del frontend (decisión de noviembre 2026 con Molly: sin campana de notificaciones, contador en el menú). `nuevas`: alertas en estado `nueva` del usuario (la misma cuenta que el resumen "Nuevas" de la pantalla). `urgentes`: de esas, las que tienen entre 0 y `DIAS_URGENTE` (10) días hábiles para oponerse; las vencidas no cuentan. `DIAS_URGENTE` es copia del de `Alertas.jsx`: si cambia, en los dos.
+  - No trae filas: la base cuenta agrupando por `fecha_publicacion` y el plazo se calcula en JS una vez por fecha (`resumirAlertas`, función pura, tests en `tests/resumenAlertas.test.js`). Medido en local: 49 ms, mismos números que filtrar `GET /alertas`.
 - `PATCH /alertas/:id` con `{ estado?, nota? }` — 200 `{ id, estado, nota }`; 400 si el estado es inválido o no hay cambios; 404 si la alerta no es de una marca del usuario.
 
 ## Validación de registro e inicio de sesión

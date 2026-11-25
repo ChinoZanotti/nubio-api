@@ -12,7 +12,7 @@ import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
 import { verificarConfiguracion } from './utils/token.js'
 import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk } from './controllers/marcas.js'
 import { handleBuscarBoletinMarcas } from './controllers/boletines.js'
-import { handleGetAlertas, handleUpdateAlerta } from './controllers/alertas.js'
+import { handleGetAlertas, handleResumenAlertas, handleUpdateAlerta } from './controllers/alertas.js'
 
 // Sin JWT_SECRET no se pueden firmar ni verificar tokens: cortamos al arrancar.
 verificarConfiguracion()
@@ -88,6 +88,8 @@ app.post('/boletines/marcas/buscar', requireAuth, limitadorBoletines, (req, res)
 
 // Alertas
 app.get('/alertas', requireAuth, (req, res) => handleGetAlertas(req, res, db))
+// Contador del menú del frontend: { nuevas, urgentes }, sin traer las alertas.
+app.get('/alertas/resumen', requireAuth, (req, res) => handleResumenAlertas(req, res, db))
 app.patch('/alertas/:id', requireAuth, (req, res) => handleUpdateAlerta(req, res, db))
 
 // --- Al final, siempre: lo que no atendió ninguna ruta ---

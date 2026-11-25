@@ -48,6 +48,49 @@ export const handleGetAlertas = async (req, res, db) => {
     }
 }
 
+// Una alerta nueva es urgente si le quedan entre 0 y DIAS_URGENTE días hábiles
+// para oponerse. Es la misma regla que DIAS_URGENTE de Alertas.jsx (frontend):
+// si cambia, cambiarla en los dos. Las vencidas no cuentan: ya no hay nada que hacer.
+export const DIAS_URGENTE = 10
+
+// grupos: [{ fecha_publicacion, cantidad }] con las alertas NUEVAS del usuario,
+// contadas por fecha de boletín. Devuelve { nuevas, urgentes }.
+// Función pura (sin base) para poder probarla con cualquier "hoy".
+export function resumirAlertas(grupos, hoyPy) {
+    let nuevas = 0
+    let urgentes = 0
+    for (const { fecha_publicacion, cantidad } of grupos) {
+        const n = Number(cantidad) // pg devuelve count() como texto (bigint)
+        nuevas += n
+        const dias = diasHabilesEntre(hoyPy, venceOposicion(fecha_publicacion))
+        if (dias >= 0 && dias <= DIAS_URGENTE) urgentes += n
+    }
+    return { nuevas, urgentes }
+}
+
+// GET /alertas/resumen: lo que necesita el contador del menú, sin traer las
+// alertas. La base devuelve una fila por fecha de boletín (pocas, porque las
+// alertas llegan en tandas) y el plazo se calcula una vez por fecha.
+export const handleResumenAlertas = async (req, res, db) => {
+    const { userId } = req
+
+    try {
+        const grupos = await db('alertas as a')
+            .join('marcas as m', 'm.id', 'a.marca_id')
+            .join('boletin_marcas as b', 'b.id', 'a.boletin_marca_id')
+            .where('m.user_id', userId)
+            .where('a.estado', 'nueva')
+            .groupBy('b.fecha_publicacion')
+            .select('b.fecha_publicacion')
+            .count('* as cantidad')
+
+        res.json(resumirAlertas(grupos, hoy()))
+    } catch (err) {
+        registrarError('GET /alertas/resumen', err)
+        res.status(500).json({ error: 'No se pudo obtener el resumen de alertas.' })
+    }
+}
+
 export const handleUpdateAlerta = async (req, res, db) => {
     const { userId } = req
     const id = parseId(req.params.id)
