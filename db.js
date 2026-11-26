@@ -70,6 +70,11 @@ export function crearDb() {
     const { url, esNeon } = prepararUrl(process.env.DATABASE_URL)
     return knex({
         client: 'pg',
+        // Cuánto espera un pedido para conseguir conexión del pool (10 como
+        // máximo) antes de fallar. El default de knex es 60 s: con una cola
+        // larga, la API quedaba colgada un minuto. Mejor un error a los 10 s
+        // (M1 de la revisión de los límites, noviembre 2026).
+        acquireConnectionTimeout: 10_000,
         connection: {
             connectionString: url,
             ssl: esNeon ? { rejectUnauthorized: true } : false,

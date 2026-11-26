@@ -112,22 +112,64 @@ export const limitadorImportacion = limitador('importacion', {
 // Boletines: por USUARIO (tercera revisión de Case, B2). Cada pedido corre
 // varias consultas sobre 13.000+ filas; el límite general por IP deja pasar 500
 // de golpe y, con el pool de 10 conexiones, eso hacía esperar a todos (incluido
-// el login). 60 por minuto sobra para un uso real: el filtro espera 300 ms
+// el login). 60 por minuto sobran para UNA persona: el filtro espera 300 ms
 // después de la última tecla y una página se pide de a una.
-// Tiene que ir DESPUÉS de requireAuth en la ruta: usa req.userId.
-export const limitadorBoletines = limitador('boletines', {
+//
+// Hoy un mismo usuario lo usan 3 personas del estudio (noviembre 2026), así que
+// van dos límites (revisión de Case de los límites, M1):
+// - por SESIÓN, 60: cada persona tiene su propio cupo y ninguna le gasta el
+//   suyo a las otras;
+// - por USUARIO, 180: el techo de la cuenta. Por sesión solo no alcanza: quien
+//   tiene la contraseña abre sesiones nuevas cuando quiere.
+// Además, server.js limita las búsquedas EN CURSO (middleware/simultaneos.js):
+// estos límites cuentan por minuto y no frenan una ráfaga.
+// Cuando cada persona tenga su cuenta, el de usuario puede volver a 60.
+// Tienen que ir DESPUÉS de requireAuth en la ruta: usan req.userId y req.sesionId.
+export const limitadorBoletinesSesion = limitador('boletines_sesion', {
     windowMs: 60 * 1000,
     limit: 60,
+    keyGenerator: (req) => `sesion:${req.userId}:${req.sesionId}`,
+    message: { error: 'Demasiadas búsquedas seguidas. Esperá un minuto y volvé a probar.' },
+})
+
+export const limitadorBoletines = limitador('boletines', {
+    windowMs: 60 * 1000,
+    limit: 180,
     keyGenerator: (req) => `usuario:${req.userId}`,
     message: { error: 'Demasiadas búsquedas seguidas. Esperá un minuto y volvé a probar.' },
 })
 
-// General: un techo amplio para toda la API, contra scripts que martillan
-// cualquier ruta (por ejemplo /boletines/marcas, que es pesada).
-// 500 cada 15 minutos son ~33 por minuto: un uso normal no se acerca, ni
-// siquiera varias personas de un estudio que salen a internet con la misma IP.
+// General por IP: techo contra quien martilla la API SIN sesión válida (login,
+// registro, tokens inventados o vencidos, rutas que no existen).
+//
+// Los pedidos con sesión válida (requireAuth dejó req.userId) se descuentan al
+// terminar, así que no gastan el cupo de la IP: de esos se ocupa
+// limitadorUsuario. Antes contaban todos, y las personas de un estudio, que
+// salen a internet con la MISMA IP, compartían 500 pedidos cada 15 minutos; con
+// uso intensivo de Boletines podían recibir 429. Igual que en
+// limitadorCambioPassword, el pedido se suma ANTES y se resta al terminar: si
+// la IP ya pasó el tope, se frena aunque traiga sesión.
+//
+// GET / no pasa por acá (va antes en server.js): es el chequeo de salud de
+// Render y del monitor, y no toca la base.
 export const limitadorGeneral = limitador('general', {
     windowMs: QUINCE_MINUTOS,
     limit: 500,
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (req) => req.userId !== undefined,
+    message: { error: 'Demasiados pedidos. Esperá unos minutos y volvé a probar.' },
+})
+
+// Por USUARIO, para todo pedido con sesión (server.js lo pone junto a
+// requireAuth, en `conSesion`). Es el techo de quien tiene sesión: varias
+// personas detrás de la misma IP no se frenan entre sí, y un script con un
+// token robado igual tiene un límite. 1500 cada 15 minutos (~100 por minuto)
+// alcanzan para 3 personas usando la misma cuenta: 500 cada una, lo que antes
+// tenía una IP entera.
+// Tiene que ir DESPUÉS de requireAuth: usa req.userId.
+export const limitadorUsuario = limitador('usuario', {
+    windowMs: QUINCE_MINUTOS,
+    limit: 1500,
+    keyGenerator: (req) => `usuario:${req.userId}`,
     message: { error: 'Demasiados pedidos. Esperá unos minutos y volvé a probar.' },
 })

@@ -6,7 +6,8 @@ import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleMe, handleUpdateMe, handleCambiarPassword } from './controllers/me.js'
 import { crearRequireAuth } from './middleware/requireAuth.js'
-import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorImportacion, limitadorBoletines, limitadorCambioPassword } from './middleware/rateLimit.js'
+import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorUsuario, limitadorImportacion, limitadorBoletines, limitadorBoletinesSesion, limitadorCambioPassword } from './middleware/rateLimit.js'
+import { crearLimiteSimultaneo } from './middleware/simultaneos.js'
 import { corsNubio, helmetNubio } from './middleware/seguridad.js'
 import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
 import { verificarConfiguracion } from './utils/token.js'
@@ -23,6 +24,25 @@ const db = crearDb()
 // requireAuth necesita la base: además de la firma del token, revisa que su
 // versión siga vigente (que no se haya cambiado la contraseña después).
 const requireAuth = crearRequireAuth(db)
+
+// Toda ruta con datos lleva `conSesion`: primero el token (requireAuth deja
+// req.userId) y después el límite por usuario, que necesita ese id.
+// Express acepta un array de middlewares donde va uno solo.
+const conSesion = [requireAuth, limitadorUsuario]
+
+// Registro cerrado salvo REGISTRO_ABIERTO=true (noviembre 2026). Hasta que haya
+// roles, cualquiera con la URL podía crearse una cuenta; las cuentas del
+// estudio ya existen. Cerrado por defecto: si falta la variable, queda cerrado.
+const registroAbierto = process.env.REGISTRO_ABIERTO === 'true'
+
+// Búsquedas de Boletines EN CURSO por usuario (M1 de la revisión de los
+// límites). Cada una usa 3 de las 10 conexiones del pool: con 3 a la vez, un
+// usuario ocupa como mucho 9 y nunca deja sin conexión al login. Alcanza para 3
+// personas: el frontend cancela la búsqueda anterior antes de pedir otra.
+const turnoBusqueda = crearLimiteSimultaneo({
+    maximo: 3,
+    mensaje: 'Hay otras búsquedas en curso. Esperá un momento y volvé a probar.',
+})
 
 const app = express()
 
@@ -44,6 +64,14 @@ app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 3))
 // corsNubio() lee FRONTEND_URL y corta el arranque si no está.
 app.use(helmetNubio())
 app.use(corsNubio())
+
+// Chequeo de salud: lo llaman Render (Health Check Path) y el monitor externo.
+// Va ANTES del limitador: si cayera en un 429, Render creería que el servidor
+// está caído. No toca la base, así que no hay nada que proteger.
+app.get('/', (req, res) => {
+    res.json({ status: 'ok', message: 'API funcionando' })
+})
+
 app.use(limitadorGeneral)
 app.use(express.json({ limit: '1mb' }))
 // En Express 5, si el pedido no trae Content-Type: application/json, req.body
@@ -55,42 +83,42 @@ app.use((req, res, next) => {
     next()
 })
 
-app.get('/', (req, res) => {
-    res.json({ status: 'ok', message: 'API funcionando' })
-})
-
 // --- Rutas públicas (no piden token) ---
 // El limitador va antes del handler: si la IP se pasó, responde 429 y no se
 // llega a correr bcrypt ni a tocar la base.
 app.post('/signin', limitadorLogin, (req, res) => handleSignin(req, res, db, bcrypt));
-app.post('/register', limitadorRegistro, (req, res) => handleRegister(req, res, db, bcrypt));
+app.post('/register', (req, res, next) => {
+    if (registroAbierto) return next()
+    res.status(403).json({ error: 'El registro de cuentas nuevas está cerrado.' })
+}, limitadorRegistro, (req, res) => handleRegister(req, res, db, bcrypt));
 
 // --- Rutas protegidas ---
-// requireAuth va como segundo argumento: Express lo corre antes del handler.
-// Si el token falta o no es válido, responde 401 y el handler no se ejecuta.
-// Toda ruta nueva que maneje datos tiene que llevarlo.
+// conSesion (requireAuth + limitadorUsuario) va como segundo argumento: Express
+// lo corre antes del handler. Si el token falta o no es válido, responde 401 y
+// el handler no se ejecuta. Toda ruta nueva que maneje datos tiene que llevarlo.
 
-app.get('/me', requireAuth, (req, res) => handleMe(req, res, db))
-app.patch('/me', requireAuth, (req, res) => handleUpdateMe(req, res, db))
-// El limitador va después de requireAuth: cuenta por sesión (req.sesionId).
-app.post('/me/password', requireAuth, limitadorCambioPassword, (req, res) => handleCambiarPassword(req, res, db, bcrypt))
+app.get('/me', conSesion, (req, res) => handleMe(req, res, db))
+app.patch('/me', conSesion, (req, res) => handleUpdateMe(req, res, db))
+// El limitador va después de conSesion: cuenta por sesión (req.sesionId).
+app.post('/me/password', conSesion, limitadorCambioPassword, (req, res) => handleCambiarPassword(req, res, db, bcrypt))
 
 // Marcas
-app.get('/marcas', requireAuth, (req, res) => handleGetMarcas(req, res, db))
-app.post('/marcas', requireAuth, (req, res) => handleCreateMarca(req, res, db))
-// limitadorImportacion va después de requireAuth: cuenta por usuario (req.userId).
-app.post('/marcas/bulk', requireAuth, limitadorImportacion, (req, res) => handleCreateMarcasBulk(req, res, db))
+app.get('/marcas', conSesion, (req, res) => handleGetMarcas(req, res, db))
+app.post('/marcas', conSesion, (req, res) => handleCreateMarca(req, res, db))
+// limitadorImportacion va después de conSesion: cuenta por usuario (req.userId).
+app.post('/marcas/bulk', conSesion, limitadorImportacion, (req, res) => handleCreateMarcasBulk(req, res, db))
 
 // Boletines DINAPI: los datos son públicos, pero la consulta es pesada.
 // Se protege para que no la pueda martillar cualquiera.
 // POST y no GET: la búsqueda va en el cuerpo, que no queda en los logs de acceso.
-app.post('/boletines/marcas/buscar', requireAuth, limitadorBoletines, (req, res) => handleBuscarBoletinMarcas(req, res, db))
+app.post('/boletines/marcas/buscar', conSesion, limitadorBoletinesSesion, limitadorBoletines, (req, res) =>
+    turnoBusqueda(req, res, () => handleBuscarBoletinMarcas(req, res, db)))
 
 // Alertas
-app.get('/alertas', requireAuth, (req, res) => handleGetAlertas(req, res, db))
+app.get('/alertas', conSesion, (req, res) => handleGetAlertas(req, res, db))
 // Contador del menú del frontend: { nuevas, urgentes }, sin traer las alertas.
-app.get('/alertas/resumen', requireAuth, (req, res) => handleResumenAlertas(req, res, db))
-app.patch('/alertas/:id', requireAuth, (req, res) => handleUpdateAlerta(req, res, db))
+app.get('/alertas/resumen', conSesion, (req, res) => handleResumenAlertas(req, res, db))
+app.patch('/alertas/:id', conSesion, (req, res) => handleUpdateAlerta(req, res, db))
 
 // --- Al final, siempre: lo que no atendió ninguna ruta ---
 app.use(rutaNoEncontrada)
