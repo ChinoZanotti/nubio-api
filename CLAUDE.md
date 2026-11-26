@@ -1,7 +1,9 @@
 # Nubio API — Backend
 
 ## Qué es este proyecto
-Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend vive en un repositorio separado llamado `nubio`, desplegado en Render como Static Site. Este backend se despliega en Render como Web Service, en `https://nubio-api.onrender.com`.
+Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend vive en un repositorio separado llamado `nubio`, desplegado en Render como Static Site. Este backend se despliega en Render como Web Service, en `https://nubio-api-ohio.onrender.com` (plan Starter, siempre encendido, con Health Check Path `/` y monitor en UptimeRobot).
+- Región **Ohio**, la misma que Neon (AWS us-east-2). Hasta noviembre de 2026 estaba en Oregon (`nubio-api.onrender.com`) y cada consulta a la base cruzaba el país ida y vuelta. Render no cambia la región de un servicio: se creó uno nuevo con las mismas variables (el mismo `JWT_SECRET`, para no cerrar las sesiones abiertas). Si se vuelve a crear, ver "Región de la API" en el `CLAUDE.md` del frontend.
+- El frontend está en `https://nubio-kruo.onrender.com` (es el valor de `FRONTEND_URL`).
 
 ## Stack
 - Node.js + Express (ESM — `"type": "module"` en package.json)
