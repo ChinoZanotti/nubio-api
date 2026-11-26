@@ -6,12 +6,12 @@ import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleMe, handleUpdateMe, handleCambiarPassword } from './controllers/me.js'
 import { crearRequireAuth } from './middleware/requireAuth.js'
-import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorUsuario, limitadorImportacion, limitadorBoletines, limitadorBoletinesSesion, limitadorCambioPassword } from './middleware/rateLimit.js'
+import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorUsuario, limitadorImportacion, limitadorBoletines, limitadorBoletinesSesion, limitadorCambioPassword, limitadorEscrituraMarcas } from './middleware/rateLimit.js'
 import { crearLimiteSimultaneo } from './middleware/simultaneos.js'
 import { corsNubio, helmetNubio } from './middleware/seguridad.js'
 import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
 import { verificarConfiguracion } from './utils/token.js'
-import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk } from './controllers/marcas.js'
+import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk, handleUpdateMarca, handleDeleteMarca } from './controllers/marcas.js'
 import { handleBuscarBoletinMarcas } from './controllers/boletines.js'
 import { handleGetAlertas, handleResumenAlertas, handleUpdateAlerta } from './controllers/alertas.js'
 
@@ -104,9 +104,15 @@ app.post('/me/password', conSesion, limitadorCambioPassword, (req, res) => handl
 
 // Marcas
 app.get('/marcas', conSesion, (req, res) => handleGetMarcas(req, res, db))
-app.post('/marcas', conSesion, (req, res) => handleCreateMarca(req, res, db))
+// limitadorEscrituraMarcas: alta, edición y borrado de a una (cuenta solo lo
+// que hace trabajar al motor o borra; ver middleware/rateLimit.js).
+app.post('/marcas', conSesion, limitadorEscrituraMarcas, (req, res) => handleCreateMarca(req, res, db))
 // limitadorImportacion va después de conSesion: cuenta por usuario (req.userId).
 app.post('/marcas/bulk', conSesion, limitadorImportacion, (req, res) => handleCreateMarcasBulk(req, res, db))
+// Editar manda la marca completa; PATCH y no PUT porque es lo que ya permite
+// CORS (como /me y /alertas).
+app.patch('/marcas/:id', conSesion, limitadorEscrituraMarcas, (req, res) => handleUpdateMarca(req, res, db))
+app.delete('/marcas/:id', conSesion, limitadorEscrituraMarcas, (req, res) => handleDeleteMarca(req, res, db))
 
 // Boletines DINAPI: los datos son públicos, pero la consulta es pesada.
 // Se protege para que no la pueda martillar cualquiera.

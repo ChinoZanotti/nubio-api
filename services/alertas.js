@@ -89,14 +89,44 @@ const TANDA_INSERT = 1000
 async function insertar(db, filas) {
     let total = 0
     for (let i = 0; i < filas.length; i += TANDA_INSERT) {
-        const insertadas = await db('alertas')
-            .insert(filas.slice(i, i + TANDA_INSERT))
-            .onConflict(['marca_id', 'boletin_marca_id'])
-            .ignore()
-            .returning('id')
-        total += insertadas.length
+        total += await insertarTanda(db, filas.slice(i, i + TANDA_INSERT))
     }
     return total
+}
+
+const FOREIGN_KEY_VIOLATION = '23503'
+
+const insertarFilas = (db, filas) => db('alertas')
+    .insert(filas)
+    .onConflict(['marca_id', 'boletin_marca_id'])
+    .ignore()
+    .returning('id')
+
+// Generar las alertas de una importación tarda minutos. Si en ese rato el
+// usuario borra una de esas marcas, el INSERT de la tanda entera falla por la
+// clave foránea (la alerta apunta a una marca que ya no existe), y se perdían
+// las alertas de TODAS las marcas de la tanda. Ante ese error se vuelve a
+// intentar solo con las filas cuya marca Y cuya publicación siguen existiendo
+// (la publicación también es clave foránea: revisión de Case, B2). Si el
+// segundo intento también falla (otro borrado justo en ese instante), el error
+// se registra.
+//
+// `db` puede ser la base o una transacción (al regenerar). El primer intento va
+// en su propio db.transaction: dentro de una transacción es un SAVEPOINT. Sin
+// eso, en Postgres un INSERT fallido deja la transacción entera inutilizable y
+// el reintento también fallaría.
+async function insertarTanda(db, filas) {
+    if (filas.length === 0) return 0
+    try {
+        return (await db.transaction((t) => insertarFilas(t, filas))).length
+    } catch (err) {
+        if (err.code !== FOREIGN_KEY_VIOLATION) throw err
+        const unicos = (campo) => [...new Set(filas.map((f) => f[campo]))]
+        const marcas = new Set(await db('marcas').whereIn('id', unicos('marca_id')).pluck('id'))
+        const publicadas = new Set(await db('boletin_marcas').whereIn('id', unicos('boletin_marca_id')).pluck('id'))
+        const quedan = filas.filter((f) => marcas.has(f.marca_id) && publicadas.has(f.boletin_marca_id))
+        return quedan.length === 0 ? 0 : (await insertarFilas(db, quedan)).length
+    }
 }
 
 // Un boletín nuevo se compara contra las marcas de TODOS los usuarios.
@@ -140,11 +170,36 @@ async function publicadasEnPlazo(db) {
 
 // Marcas nuevas de un usuario contra lo publicado que todavía se puede oponer.
 // Desde el servidor se llama SIEMPRE a través de la fila (encolarAlertasParaMarcas).
-export async function generarAlertasParaMarcas(db, marcaIds) {
+//
+// `regenerar: true` es para una marca EDITADA en lo que compara el motor
+// (denominación, clase, signo o expediente): primero borra sus alertas que nadie
+// tocó (estado "nueva" y sin nota), que se calcularon con los datos viejos, y
+// después compara de nuevo. Las que el usuario ya revisó se conservan: son su
+// trabajo. Se hace acá, dentro del trabajo, y no en el pedido de edición: la
+// fila corre de a un trabajo, así que si la marca todavía tenía pendiente su
+// trabajo de alta (con los datos viejos), ese ya terminó cuando llega este.
+//
+// Orden (revisión de Case, B1): primero se compara (lo lento, sin tocar la
+// base) y recién al final se borra y se inserta, juntos en una transacción.
+// Antes se borraba primero: si el trabajo fallaba en el medio (un error de la
+// base, un reinicio), la marca quedaba SIN alertas hasta un recalcular-alertas.
+// Ahora, si algo falla, la transacción se deshace y quedan las alertas viejas.
+// De paso, la pantalla de Alertas nunca ve un instante sin alertas.
+export async function generarAlertasParaMarcas(db, marcaIds, { regenerar = false } = {}) {
     if (marcaIds.length === 0) return 0
     const marcas = await db('marcas').select(COLUMNAS_MARCA).whereIn('id', marcaIds)
     const { publicadas, preparadas } = await publicadasEnPlazo(db)
-    return insertar(db, await generarPares(marcas, publicadas, preparadas))
+    const filas = await generarPares(marcas, publicadas, preparadas)
+    if (!regenerar) return insertar(db, filas)
+
+    return db.transaction(async (trx) => {
+        await trx('alertas')
+            .whereIn('marca_id', marcaIds)
+            .where({ estado: 'nueva' })
+            .whereNull('nota')
+            .del()
+        return insertar(trx, filas)
+    })
 }
 
 // Fila de trabajos en segundo plano: las generaciones corren de a UNA.
@@ -199,8 +254,9 @@ function sumarEnCola(userId, cantidad) {
 //
 // Devuelve { falta } si no hay lugar ('usuario' | 'servidor'). Si hay, devuelve
 // { falta: null, encolar, liberar }:
-// - encolar(db, ids): encola lo que efectivamente se insertó y devuelve lo que
-//   sobró de la reserva (por ejemplo, marcas duplicadas que no entraron);
+// - encolar(db, ids, opciones): encola lo que efectivamente se insertó y devuelve
+//   lo que sobró de la reserva (por ejemplo, marcas duplicadas que no entraron).
+//   opciones = { regenerar } (ver generarAlertasParaMarcas);
 // - liberar(): devuelve toda la reserva, si algo falló antes de encolar.
 // Usar una sola de las dos, una sola vez.
 export function reservarLugarEnCola(userId, cantidad) {
@@ -210,11 +266,11 @@ export function reservarLugarEnCola(userId, cantidad) {
     let usada = false
     return {
         falta: null,
-        encolar(db, marcaIds) {
+        encolar(db, marcaIds, opciones) {
             if (usada) return
             usada = true
             sumarEnCola(userId, -(cantidad - marcaIds.length))
-            return encolarReservado(db, marcaIds, userId)
+            return encolarReservado(db, marcaIds, userId, opciones)
         },
         liberar() {
             if (usada) return
@@ -232,13 +288,13 @@ export function encolarAlertasParaMarcas(db, marcaIds, userId) {
 
 // El lugar ya está sumado en los contadores: acá solo se encola el trabajo y,
 // al terminar, se descuenta.
-function encolarReservado(db, marcaIds, userId) {
+function encolarReservado(db, marcaIds, userId, opciones) {
     const cantidad = marcaIds.length
     if (cantidad === 0) return cola
     cola = cola
         .then(async () => {
             const inicio = performance.now()
-            const nuevas = await generarAlertasParaMarcas(db, marcaIds)
+            const nuevas = await generarAlertasParaMarcas(db, marcaIds, opciones)
             console.log(`Alertas: ${cantidad} marcas procesadas, ${nuevas} alertas nuevas, ${Math.round(performance.now() - inicio)} ms`)
         })
         .catch((err) => registrarError('Generación de alertas', err))

@@ -1,17 +1,25 @@
 import { registrarError } from '../utils/log.js'
 import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
 import { reservarLugarEnCola } from '../services/alertas.js'
+import { parseId } from '../utils/id.js'
+import { registrarEvento } from '../utils/eventos.js'
 
 const MAX_IMPORTACION = 1000
 // Tope de marcas por usuario. Un estudio grande vigila cientos o pocos miles
 // de marcas; 5000 deja margen. Sin tope, una cuenta podía cargar marcas sin fin:
 // cada una genera trabajo para el motor y filas en Neon (0,5 GB en el plan gratis).
 export const MAX_MARCAS_POR_USUARIO = 5000
-const COLUMNAS = ['id', 'fecha_solicitud', 'expediente', 'clase_niza', 'denominacion', 'signo', 'titular', 'pais']
+// version: sube con cada edición (sql/009_marcas_version.sql). El frontend la
+// devuelve al editar, para saber si otra persona guardó antes.
+const COLUMNAS = ['id', 'fecha_solicitud', 'expediente', 'clase_niza', 'denominacion', 'signo', 'titular', 'pais', 'version']
 
 // Códigos de error de Postgres
 const UNIQUE_VIOLATION = '23505'
 const FOREIGN_KEY_VIOLATION = '23503'
+// Un CHECK de la base (largo máximo, signo válido...). validarMarca aplica las
+// mismas reglas antes, así que no debería pasar; si algún día se desalinean,
+// es un dato inválido (400), no un error del servidor (500).
+const CHECK_VIOLATION = '23514'
 
 // El usuario sale SIEMPRE de req.userId, que lo pone el middleware requireAuth
 // después de verificar el token. Si el body trae un user_id, se ignora.
@@ -104,6 +112,7 @@ export const handleCreateMarca = async (req, res, db) => {
         // minutos. Con la fila libre, las alertas están en menos de un segundo.
         // Va después del commit: el motor tiene que poder leer la marca.
         reserva.encolar(db, [nueva.id])
+        res.locals.escrituraPesada = true // cuenta para limitadorEscrituraMarcas
         res.status(201).json(nueva)
     } catch (err) {
         reserva.liberar()
@@ -116,8 +125,146 @@ export const handleCreateMarca = async (req, res, db) => {
         if (err.code === FOREIGN_KEY_VIOLATION) {
             return res.status(400).json({ error: 'El usuario no existe.' })
         }
+        if (err.code === CHECK_VIOLATION) {
+            return res.status(400).json({ error: 'Algún dato de la marca no es válido.' })
+        }
         registrarError('POST /marcas', err)
         res.status(500).json({ error: 'No se pudo guardar la marca.' })
+    }
+}
+
+// Los datos que usa el motor de similitud. Si la edición cambia alguno, las
+// alertas de la marca se calcularon con datos viejos y hay que regenerarlas.
+// Titular, país y fecha no influyen en el puntaje.
+const CAMPOS_DEL_MOTOR = ['denominacion', 'clase_niza', 'signo', 'expediente']
+const cambioParaElMotor = (antes, despues) =>
+    CAMPOS_DEL_MOTOR.some((c) => String(antes[c] ?? '') !== String(despues[c] ?? ''))
+
+// Edita una marca (PATCH /marcas/:id): se manda la marca completa (el mismo
+// formulario que el alta, la misma validación) y la `version` que se leyó.
+//
+// Todas las consultas llevan user_id: una marca de otra cuenta responde 404,
+// igual que una que no existe, para no revelar que existe.
+//
+// Ediciones simultáneas (revisión de Case, M2 y B3): el UPDATE solo se aplica
+// si la versión en la base sigue siendo la que mandó el formulario, y la sube
+// en 1. Si otra persona guardó antes, no se pisa lo suyo: 409 con
+// codigo 'marca_modificada', y el frontend pide recargar. Esto también cierra
+// la carrera entre leer `anterior` y el UPDATE: si alguien guardó en el medio,
+// la versión ya no coincide.
+export const handleUpdateMarca = async (req, res, db) => {
+    const { userId } = req
+    const id = parseId(req.params.id)
+    if (!id) return res.status(400).json({ error: 'Parámetros inválidos.' })
+
+    const version = Number(req.body?.version)
+    if (!Number.isInteger(version) || version < 1) {
+        return res.status(400).json({ error: 'Falta la versión de la marca. Recargá la página y volvé a probar.' })
+    }
+
+    const marca = normalizarMarca(req.body ?? {})
+    const errores = validarMarca(marca)
+    if (Object.keys(errores).length > 0) {
+        return res.status(400).json({ error: Object.values(errores)[0], errores })
+    }
+    // Sin user_id en el SET (revisión de Case, I1): el WHERE ya fija la cuenta,
+    // y así el UPDATE no puede ni siquiera escribir esa columna.
+    const { user_id: _cuenta, ...cambios } = aFila(marca, userId)
+
+    let reserva = null
+    try {
+        const anterior = await db('marcas').select(COLUMNAS).where({ id, user_id: userId }).first()
+        if (!anterior) return res.status(404).json({ error: 'Marca no encontrada.' })
+        if (anterior.version !== version) return responderModificada(res)
+
+        // Si hay que regenerar alertas, se reserva lugar en la fila ANTES de
+        // guardar, como en el alta: si la fila está llena, no queda una marca
+        // cambiada con alertas viejas.
+        const regenerar = cambioParaElMotor(anterior, cambios)
+        if (regenerar) {
+            reserva = reservarLugarEnCola(userId, 1)
+            if (reserva.falta) return responderFilaLlena(res, reserva.falta)
+        }
+
+        const [actualizada] = await db('marcas')
+            .where({ id, user_id: userId, version })
+            .update({ ...cambios, version: db.raw('version + 1') })
+            .returning(COLUMNAS)
+        if (!actualizada) {
+            // Otra persona guardó (o borró) entre la lectura y el UPDATE
+            reserva?.liberar()
+            const sigue = await db('marcas').where({ id, user_id: userId }).first('id')
+            return sigue ? responderModificada(res) : res.status(404).json({ error: 'Marca no encontrada.' })
+        }
+
+        if (regenerar) {
+            reserva.encolar(db, [id], { regenerar: true })
+            res.locals.escrituraPesada = true // cuenta para limitadorEscrituraMarcas
+            // Rastro de quién cambió qué (revisión de Case, M3). Expediente y
+            // país son datos públicos de DINAPI; la denominación no hace falta.
+            registrarEvento('marca_editada', {
+                usuario: userId, sesion: req.sesionId, ip: req.ip, marca_id: id,
+                expediente: actualizada.expediente, pais: actualizada.pais,
+            })
+        }
+        res.json(actualizada)
+    } catch (err) {
+        reserva?.liberar()
+        if (err.code === UNIQUE_VIOLATION) {
+            return res.status(409).json({ error: 'Ya tenés otra marca con ese expediente en ese país.' })
+        }
+        if (err.code === CHECK_VIOLATION) {
+            return res.status(400).json({ error: 'Algún dato de la marca no es válido.' })
+        }
+        registrarError('PATCH /marcas', err)
+        res.status(500).json({ error: 'No se pudo guardar la marca.' })
+    }
+}
+
+function responderModificada(res) {
+    return res.status(409).json({
+        error: 'Otra persona modificó esta marca mientras la editabas. Volvé a la lista para ver los datos actuales.',
+        codigo: 'marca_modificada',
+    })
+}
+
+// Borra una marca (DELETE /marcas/:id). Sus alertas se borran solas (ON DELETE
+// CASCADE en sql/003_alertas.sql), con sus estados y notas: no hay papelera.
+//
+// Queda en el registro de eventos (revisión de Case, M3): con la cuenta
+// compartida y oposiciones con plazo, un borrado por error tiene que poder
+// atribuirse a una sesión. Cuenta además cuántas alertas trabajadas (con
+// estado o nota) se perdieron, para saber si importaba.
+export const handleDeleteMarca = async (req, res, db) => {
+    const { userId } = req
+    const id = parseId(req.params.id)
+    if (!id) return res.status(400).json({ error: 'Parámetros inválidos.' })
+
+    try {
+        // En una transacción: primero se cuentan las alertas trabajadas (las de
+        // una marca de OTRA cuenta no se cuentan: el JOIN filtra por user_id) y
+        // después se borra. Así la cuenta es de lo que efectivamente se perdió.
+        const resultado = await db.transaction(async (trx) => {
+            const { trabajadas } = await trx('alertas as a')
+                .join('marcas as m', 'm.id', 'a.marca_id')
+                .where({ 'm.id': id, 'm.user_id': userId })
+                .where((q) => q.whereNot('a.estado', 'nueva').orWhereNotNull('a.nota'))
+                .count('* as trabajadas')
+                .first()
+            const [borrada] = await trx('marcas').where({ id, user_id: userId }).del().returning(['expediente', 'pais'])
+            return borrada ? { ...borrada, trabajadas: Number(trabajadas) } : null
+        })
+        if (!resultado) return res.status(404).json({ error: 'Marca no encontrada.' })
+
+        res.locals.escrituraPesada = true // cuenta para limitadorEscrituraMarcas
+        registrarEvento('marca_borrada', {
+            usuario: userId, sesion: req.sesionId, ip: req.ip, marca_id: id,
+            expediente: resultado.expediente, pais: resultado.pais, alertas_trabajadas: resultado.trabajadas,
+        })
+        res.status(204).end()
+    } catch (err) {
+        registrarError('DELETE /marcas', err)
+        res.status(500).json({ error: 'No se pudo eliminar la marca.' })
     }
 }
 

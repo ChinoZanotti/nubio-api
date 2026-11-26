@@ -109,6 +109,28 @@ export const limitadorImportacion = limitador('importacion', {
     message: { error: 'Hiciste muchas importaciones en poco tiempo. Probá de nuevo en una hora.' },
 })
 
+// Escrituras de una en una sobre marcas (alta, edición, borrado), por USUARIO
+// (revisión de Case de editar/borrar marcas, M1). Antes el trabajo del motor
+// tenía un techo de hecho: 5000 marcas por cuenta en toda su vida. Con borrar,
+// crear-borrar-crear no tiene fin, y editar la denominación en bucle encola
+// una regeneración por pedido. Solo el límite general (1500 cada 15 min) lo
+// frenaba: minutos de CPU que demoran las alertas de todos.
+//
+// Solo cuenta lo que hace trabajar al motor o destruye datos: el controlador
+// lo marca en res.locals.escrituraPesada (encoló alertas o borró). Editar el
+// titular no cuenta. 200 cada 15 minutos alcanza para que 3 personas corrijan
+// marcas a mano a buen ritmo, y frena un script. Igual que
+// limitadorCambioPassword, se suma antes y se resta al terminar si no contó.
+// Tiene que ir DESPUÉS de requireAuth en la ruta: usa req.userId.
+export const limitadorEscrituraMarcas = limitador('escritura_marcas', {
+    windowMs: QUINCE_MINUTOS,
+    limit: 200,
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (req, res) => !res.locals.escrituraPesada,
+    keyGenerator: (req) => `usuario:${req.userId}`,
+    message: { error: 'Hiciste muchos cambios seguidos en tus marcas. Esperá unos minutos y volvé a probar.' },
+})
+
 // Boletines: por USUARIO (tercera revisión de Case, B2). Cada pedido corre
 // varias consultas sobre 13.000+ filas; el límite general por IP deja pasar 500
 // de golpe y, con el pool de 10 conexiones, eso hacía esperar a todos (incluido

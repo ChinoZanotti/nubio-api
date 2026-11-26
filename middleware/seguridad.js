@@ -31,12 +31,13 @@ export function corsNubio() {
     return cors({
         origin: origenesPermitidos(),
         // Solo lo que usa el frontend. Authorization lleva el token JWT.
-        methods: ['GET', 'POST', 'PATCH'],
+        // DELETE: borrar una marca (Mis marcas).
+        methods: ['GET', 'POST', 'PATCH', 'DELETE'],
         allowedHeaders: ['Content-Type', 'Authorization'],
         // El frontend manda el token en un header, no en cookies: no hace falta
         // credentials. (Si algún día se pasa a cookie, habilitarlo acá.)
         credentials: false,
-        // Antes de cada POST/PATCH con JSON, el navegador pregunta primero si
+        // Antes de cada POST/PATCH con JSON (y de cada DELETE), el navegador pregunta primero si
         // puede (un pedido OPTIONS, el "preflight"). Con esto recuerda la
         // respuesta 10 minutos en vez de preguntar cada vez.
         maxAge: 600,

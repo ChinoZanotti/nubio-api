@@ -1,15 +1,12 @@
 import { registrarError } from '../utils/log.js'
 import { hoy, venceOposicion, diasHabilesEntre } from '../utils/plazos.js'
+import { parseId } from '../utils/id.js'
 
 const ESTADOS = ['nueva', 'en_revision', 'a_oponer', 'descartada']
 const LARGO_MAXIMO_NOTA = 2000
 
-// Entero positivo o null. Solo para el id de la alerta (viene en la URL):
-// el usuario sale de req.userId, que pone el middleware requireAuth.
-function parseId(valor) {
-    const id = Number(valor)
-    return Number.isInteger(id) && id > 0 ? id : null
-}
+// El id de la alerta viene en la URL (parseId); el usuario sale de req.userId,
+// que pone el middleware requireAuth.
 
 // Filas planas: los datos de mi marca llevan prefijo "mi_" y los del boletín
 // usan los mismos nombres que en /boletines/marcas.
