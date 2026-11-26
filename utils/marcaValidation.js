@@ -24,6 +24,13 @@ export const LARGO_MAXIMO_TITULAR = 500
 // dígitos supera el tamaño máximo del índice UNIQUE de Postgres y hace fallar
 // la importación entera. CHECK en sql/007_largo_maximo_expediente.sql.
 export const LARGO_MAXIMO_EXPEDIENTE = 20
+// Datos del registro (sql/010_marcas_registro.sql), todos opcionales: una
+// marca en trámite todavía no tiene registro. El estado es texto libre, como
+// lo escribe DINAPI ("Concedida", "En Examen de Fondo"...): son decenas y
+// cambian, una lista cerrada se desactualizaría. El más largo visto mide 62.
+// El número de registro, como el expediente: solo dígitos.
+export const LARGO_MAXIMO_ESTADO = 100
+export const LARGO_MAXIMO_REGISTRO = 20
 
 const CLASE_MIN = 1
 const CLASE_MAX = 45
@@ -36,11 +43,24 @@ export function isoDesdePartes(anio, mes, dia) {
   return `${anio}-${pad(mes)}-${pad(dia)}`
 }
 
-// Fecha de hoy en formato ISO, en hora local (toISOString usa UTC y
-// a la noche podría devolver el día siguiente).
+// Fecha de hoy en formato ISO, en PARAGUAY, no en la zona de la máquina
+// (revisión de Case del registro, B3). Render corre en UTC: entre las 21 y las
+// 24 de Asunción ya era "mañana" para el servidor, y aceptaba como fecha de
+// registro la del día siguiente. Igual que hoy() de utils/plazos.js.
+// 'en-CA' da justo el formato aaaa-mm-dd.
 export function hoyISO() {
-  const hoy = new Date()
-  return isoDesdePartes(hoy.getFullYear(), hoy.getMonth() + 1, hoy.getDate())
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Asuncion' })
+}
+
+// Rango razonable de fechas (B4): nada antes de 1900 (no hay marcas vigentes
+// de antes) y un vencimiento a lo sumo 30 años adelante (un registro dura 10
+// y se renueva). Sin esto, un vencimiento en 9999 alimentaría los avisos de
+// renovación con un dato absurdo.
+const FECHA_MINIMA = '1900-01-01'
+const AÑOS_MAXIMOS_VENCIMIENTO = 30
+function vencimientoMaximoISO() {
+  const hoy = hoyISO()
+  return `${Number(hoy.slice(0, 4)) + AÑOS_MAXIMOS_VENCIMIENTO}${hoy.slice(4)}`
 }
 
 // Chequea que "aaaa-mm-dd" sea una fecha real: new Date() acepta cosas
@@ -69,10 +89,41 @@ export function parseFecha(valor) {
   return texto
 }
 
+// Campos que puede traer una marca. Lo usa camposConTipoInvalido.
+const CAMPOS_MARCA = [
+  'fecha_solicitud', 'expediente', 'clase_niza', 'denominacion', 'signo', 'titular', 'pais',
+  'estado', 'numero_registro', 'fecha_registro', 'fecha_vencimiento',
+]
+
+// Cada campo tiene que ser texto, número o vacío (revisión de Case del
+// registro, B1). Un objeto o una lista en el JSON se convertía en
+// "[object Object]" y se guardaba, o hacía fallar String() con un 500; en una
+// importación, una sola fila así tiraba abajo las 1000. Se llama ANTES de
+// normalizarMarca. Devuelve { campo: mensaje }, como validarMarca.
+export function camposConTipoInvalido(marca) {
+  const errores = {}
+  if (marca === null || typeof marca !== 'object' || Array.isArray(marca)) {
+    return { marca: 'La marca no tiene el formato esperado.' }
+  }
+  for (const campo of CAMPOS_MARCA) {
+    const v = marca[campo]
+    if (v !== undefined && v !== null && typeof v !== 'string' && typeof v !== 'number') {
+      errores[campo] = 'Valor inválido.'
+    }
+  }
+  return errores
+}
+
+// Caracteres de control (tabulación, salto de línea, NUL...). Una celda de
+// Excel puede traer saltos de línea, y un NUL hace fallar el INSERT en
+// Postgres (B2): se cambian por un espacio en vez de rechazar la marca.
+// eslint-disable-next-line no-control-regex -- es justo lo que se busca
+const CONTROL = /[\u0000-\u001F\u007F]+/g
+
 // Limpia los datos antes de validar o mandar al backend:
 // recorta espacios, pasa a mayúsculas los códigos y convierte la clase a número.
 export function normalizarMarca(marca) {
-  const texto = (v) => String(v ?? '').trim()
+  const texto = (v) => String(v ?? '').replace(CONTROL, ' ').trim()
   const clase = texto(marca.clase_niza)
 
   return {
@@ -83,6 +134,12 @@ export function normalizarMarca(marca) {
     signo: texto(marca.signo).toUpperCase(),
     titular: texto(marca.titular),
     pais: texto(marca.pais).toUpperCase(),
+    // Opcionales: '' si no hay dato (el backend lo guarda como NULL)
+    // Espacios repetidos a uno: DINAPI a veces deja dobles ("Concedida  ")
+    estado: texto(marca.estado).replace(/ {2,}/g, ' '),
+    numero_registro: texto(marca.numero_registro),
+    fecha_registro: texto(marca.fecha_registro),
+    fecha_vencimiento: texto(marca.fecha_vencimiento),
   }
 }
 
@@ -97,6 +154,8 @@ export function validarMarca(marca) {
     errores.fecha_solicitud = 'Fecha inválida (usá dd/mm/aaaa).'
   } else if (marca.fecha_solicitud > hoyISO()) {
     errores.fecha_solicitud = 'La fecha no puede ser futura.'
+  } else if (marca.fecha_solicitud < FECHA_MINIMA) {
+    errores.fecha_solicitud = 'La fecha no puede ser anterior a 1900.'
   }
 
   if (!marca.expediente) {
@@ -136,6 +195,45 @@ export function validarMarca(marca) {
 
   if (!CODIGOS_PAIS.includes(marca.pais)) {
     errores.pais = 'País inválido (usá el código de 2 letras, ej.: PY).'
+  }
+
+  // ===== Datos del registro: todos opcionales =====
+  // `?? ''`: quien llama a validarMarca sin pasar por normalizarMarca (o con
+  // un objeto de antes de estos campos) no rompe.
+  const estado = marca.estado ?? ''
+  const numeroRegistro = marca.numero_registro ?? ''
+  const fechaRegistro = marca.fecha_registro ?? ''
+  const fechaVencimiento = marca.fecha_vencimiento ?? ''
+
+  if (estado.length > LARGO_MAXIMO_ESTADO) {
+    errores.estado = `El estado puede tener hasta ${LARGO_MAXIMO_ESTADO} caracteres.`
+  }
+
+  if (numeroRegistro && !/^\d+$/.test(numeroRegistro)) {
+    errores.numero_registro = 'El número de registro solo puede tener números.'
+  } else if (numeroRegistro.length > LARGO_MAXIMO_REGISTRO) {
+    errores.numero_registro = `El número de registro puede tener hasta ${LARGO_MAXIMO_REGISTRO} dígitos.`
+  }
+
+  // El registro puede ser anterior a la solicitud cargada (pasa con
+  // renovaciones), así que no se compara con fecha_solicitud.
+  if (fechaRegistro && !esFechaISOValida(fechaRegistro)) {
+    errores.fecha_registro = 'Fecha inválida (usá dd/mm/aaaa).'
+  } else if (fechaRegistro > hoyISO()) {
+    errores.fecha_registro = 'La fecha de registro no puede ser futura.'
+  } else if (fechaRegistro && fechaRegistro < FECHA_MINIMA) {
+    errores.fecha_registro = 'La fecha de registro no puede ser anterior a 1900.'
+  }
+
+  // El vencimiento sí puede ser futuro (es lo normal). Solo tiene que ser
+  // posterior al registro, si los dos están.
+  // El mensaje dice contra qué fecha se compara: así se sabe cómo corregirlo.
+  if (fechaVencimiento && !esFechaISOValida(fechaVencimiento)) {
+    errores.fecha_vencimiento = 'Fecha inválida (usá dd/mm/aaaa).'
+  } else if (fechaVencimiento && fechaRegistro && !errores.fecha_registro && fechaVencimiento <= fechaRegistro) {
+    errores.fecha_vencimiento = `El vencimiento tiene que ser posterior al ${formatFecha(fechaRegistro)} (fecha de registro).`
+  } else if (fechaVencimiento && (fechaVencimiento < FECHA_MINIMA || fechaVencimiento > vencimientoMaximoISO())) {
+    errores.fecha_vencimiento = `El vencimiento tiene que estar entre 1900 y los próximos ${AÑOS_MAXIMOS_VENCIMIENTO} años.`
   }
 
   return errores

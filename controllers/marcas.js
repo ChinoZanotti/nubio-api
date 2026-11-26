@@ -1,5 +1,5 @@
 import { registrarError } from '../utils/log.js'
-import { normalizarMarca, validarMarca } from '../utils/marcaValidation.js'
+import { normalizarMarca, validarMarca, camposConTipoInvalido } from '../utils/marcaValidation.js'
 import { reservarLugarEnCola } from '../services/alertas.js'
 import { parseId } from '../utils/id.js'
 import { registrarEvento } from '../utils/eventos.js'
@@ -11,7 +11,12 @@ const MAX_IMPORTACION = 1000
 export const MAX_MARCAS_POR_USUARIO = 5000
 // version: sube con cada edición (sql/009_marcas_version.sql). El frontend la
 // devuelve al editar, para saber si otra persona guardó antes.
-const COLUMNAS = ['id', 'fecha_solicitud', 'expediente', 'clase_niza', 'denominacion', 'signo', 'titular', 'pais', 'version']
+// estado, numero_registro, fecha_registro, fecha_vencimiento: datos del
+// registro, opcionales (sql/010_marcas_registro.sql).
+const COLUMNAS = [
+    'id', 'fecha_solicitud', 'expediente', 'clase_niza', 'denominacion', 'signo', 'titular', 'pais', 'version',
+    'estado', 'numero_registro', 'fecha_registro', 'fecha_vencimiento',
+]
 
 // Códigos de error de Postgres
 const UNIQUE_VIOLATION = '23505'
@@ -26,8 +31,18 @@ const CHECK_VIOLATION = '23514'
 
 // Arma la fila a insertar. Usamos solo los campos que devuelve normalizarMarca,
 // así no se puede colar ninguna otra columna (ej: un "id" o "created_at" en el body).
+// Lo que viene vacío ('') se guarda como NULL: "sin dato", no un texto vacío
+// (y una fecha '' ni siquiera entra en una columna DATE).
 function aFila(marca, userId) {
-    return { ...marca, denominacion: marca.denominacion || null, user_id: userId }
+    return {
+        ...marca,
+        denominacion: marca.denominacion || null,
+        estado: marca.estado || null,
+        numero_registro: marca.numero_registro || null,
+        fecha_registro: marca.fecha_registro || null,
+        fecha_vencimiento: marca.fecha_vencimiento || null,
+        user_id: userId,
+    }
 }
 
 // Antes de guardar marcas nuevas se chequean dos topes, y ninguno puede tener
@@ -95,6 +110,12 @@ export const handleGetMarcas = async (req, res, db) => {
 export const handleCreateMarca = async (req, res, db) => {
     const { userId } = req
 
+    // Tipos primero (revisión de Case del registro, B1): un objeto o una lista
+    // en un campo no llega a normalizarMarca.
+    const erroresTipo = camposConTipoInvalido(req.body)
+    if (Object.keys(erroresTipo).length > 0) {
+        return res.status(400).json({ error: Object.values(erroresTipo)[0], errores: erroresTipo })
+    }
     const marca = normalizarMarca(req.body)
     const errores = validarMarca(marca)
     if (Object.keys(errores).length > 0) {
@@ -140,6 +161,12 @@ const CAMPOS_DEL_MOTOR = ['denominacion', 'clase_niza', 'signo', 'expediente']
 const cambioParaElMotor = (antes, despues) =>
     CAMPOS_DEL_MOTOR.some((c) => String(antes[c] ?? '') !== String(despues[c] ?? ''))
 
+// Datos del registro (sql/010): opcionales, y si un PATCH no los trae se
+// conservan (ver handleUpdateMarca).
+const CAMPOS_OPCIONALES = ['estado', 'numero_registro', 'fecha_registro', 'fecha_vencimiento']
+// Todo lo que se puede editar: para el rastro de qué cambió.
+const CAMPOS_EDITABLES = ['fecha_solicitud', 'expediente', 'clase_niza', 'denominacion', 'signo', 'titular', 'pais', ...CAMPOS_OPCIONALES]
+
 // Edita una marca (PATCH /marcas/:id): se manda la marca completa (el mismo
 // formulario que el alta, la misma validación) y la `version` que se leyó.
 //
@@ -162,20 +189,36 @@ export const handleUpdateMarca = async (req, res, db) => {
         return res.status(400).json({ error: 'Falta la versión de la marca. Recargá la página y volvé a probar.' })
     }
 
-    const marca = normalizarMarca(req.body ?? {})
-    const errores = validarMarca(marca)
-    if (Object.keys(errores).length > 0) {
-        return res.status(400).json({ error: Object.values(errores)[0], errores })
+    const erroresTipo = camposConTipoInvalido(req.body)
+    if (Object.keys(erroresTipo).length > 0) {
+        return res.status(400).json({ error: Object.values(erroresTipo)[0], errores: erroresTipo })
     }
-    // Sin user_id en el SET (revisión de Case, I1): el WHERE ya fija la cuenta,
-    // y así el UPDATE no puede ni siquiera escribir esa columna.
-    const { user_id: _cuenta, ...cambios } = aFila(marca, userId)
 
     let reserva = null
     try {
         const anterior = await db('marcas').select(COLUMNAS).where({ id, user_id: userId }).first()
         if (!anterior) return res.status(404).json({ error: 'Marca no encontrada.' })
         if (anterior.version !== version) return responderModificada(res)
+
+        // Los campos opcionales que NO vienen en el pedido se conservan
+        // (revisión de Case del registro, M1). Sin esto, una pestaña abierta
+        // con el frontend de antes de estos campos (o cualquier cliente que no
+        // los mande) los dejaba en NULL sin aviso: la versión coincidía, así
+        // que nada lo frenaba, y se perdía la fecha de vencimiento. Se
+        // completan ANTES de validar, para que la regla "vencimiento posterior
+        // al registro" compare con el dato que va a quedar guardado.
+        const entrada = { ...req.body }
+        for (const campo of CAMPOS_OPCIONALES) {
+            if (!(campo in entrada)) entrada[campo] = anterior[campo]
+        }
+        const marca = normalizarMarca(entrada)
+        const errores = validarMarca(marca)
+        if (Object.keys(errores).length > 0) {
+            return res.status(400).json({ error: Object.values(errores)[0], errores })
+        }
+        // Sin user_id en el SET (revisión de Case, I1): el WHERE ya fija la
+        // cuenta, y así el UPDATE no puede ni siquiera escribir esa columna.
+        const { user_id: _cuenta, ...cambios } = aFila(marca, userId)
 
         // Si hay que regenerar alertas, se reserva lugar en la fila ANTES de
         // guardar, como en el alta: si la fila está llena, no queda una marca
@@ -200,11 +243,17 @@ export const handleUpdateMarca = async (req, res, db) => {
         if (regenerar) {
             reserva.encolar(db, [id], { regenerar: true })
             res.locals.escrituraPesada = true // cuenta para limitadorEscrituraMarcas
-            // Rastro de quién cambió qué (revisión de Case, M3). Expediente y
-            // país son datos públicos de DINAPI; la denominación no hace falta.
+        }
+        // Rastro de quién cambió qué: cualquier cambio, no solo los que mueven
+        // al motor (revisiones de Case: M3 de editar/borrar, M2 del registro).
+        // Cambiar o borrar una fecha de vencimiento también tiene que poder
+        // atribuirse. Van los NOMBRES de los campos, no los valores.
+        // Expediente y país son datos públicos de DINAPI.
+        const camposCambiados = CAMPOS_EDITABLES.filter((c) => String(anterior[c] ?? '') !== String(actualizada[c] ?? ''))
+        if (camposCambiados.length > 0) {
             registrarEvento('marca_editada', {
                 usuario: userId, sesion: req.sesionId, ip: req.ip, marca_id: id,
-                expediente: actualizada.expediente, pais: actualizada.pais,
+                expediente: actualizada.expediente, pais: actualizada.pais, campos_cambiados: camposCambiados,
             })
         }
         res.json(actualizada)
@@ -285,7 +334,14 @@ export const handleCreateMarcasBulk = async (req, res, db) => {
     const errores = []
     const validas = []
     marcas.forEach((m, fila) => {
-        const marca = normalizarMarca(m ?? {})
+        // Tipos primero (B1): una fila con un objeto o una lista es un error de
+        // ESA fila; antes hacía fallar la importación entera con un 500.
+        const erroresTipo = camposConTipoInvalido(m)
+        if (Object.keys(erroresTipo).length > 0) {
+            errores.push({ fila, error: Object.values(erroresTipo).join(' ') })
+            return
+        }
+        const marca = normalizarMarca(m)
         const erroresFila = validarMarca(marca)
         if (Object.keys(erroresFila).length > 0) {
             errores.push({ fila, error: Object.values(erroresFila).join(' ') })
@@ -338,6 +394,9 @@ export const handleCreateMarcasBulk = async (req, res, db) => {
         }
         if (err.code === FOREIGN_KEY_VIOLATION) {
             return res.status(400).json({ error: 'El usuario no existe.' })
+        }
+        if (err.code === CHECK_VIOLATION) {
+            return res.status(400).json({ error: 'Algún dato de las marcas no es válido.' })
         }
         registrarError('POST /marcas/bulk', err)
         res.status(500).json({ error: 'No se pudieron importar las marcas.' })

@@ -53,12 +53,19 @@ function parsearFila(linea) {
     }
     if (!tramite) return { error: 'Falta el trámite.' }
 
-    const { fecha_solicitud, ...resto } = marca
+    // Campos explícitos y no `...marca`: normalizarMarca también devuelve los de
+    // las marcas propias (estado, numero_registro...), que boletin_marcas no
+    // tiene. Con el spread, el INSERT pedía columnas inexistentes y fallaba.
+    const { fecha_solicitud, expediente: exp, clase_niza, denominacion: den, signo: sig, titular, pais: p } = marca
     return {
         fila: {
-            ...resto,
+            expediente: exp,
+            clase_niza,
+            signo: sig,
+            titular,
+            pais: p,
             fecha_publicacion: fecha_solicitud,
-            denominacion: vacioANull(resto.denominacion),
+            denominacion: vacioANull(den),
             agente: vacioANull(agente),
             matricula: vacioANull(matricula),
             tramite,
