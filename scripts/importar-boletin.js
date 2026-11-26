@@ -10,7 +10,9 @@ import { parsearLineaCsv } from '../utils/csv.js'
 
 const COLUMNAS_CSV = 11
 // Los diarios traen el nombre; si llega la letra (M, D, F, T, S) se usa tal cual.
-const SIGNO_POR_NOMBRE = { Mixta: 'M', Denominativa: 'D', Figurativa: 'F', Tridimensional: 'T', Sonora: 'S' }
+// Claves en minúscula y se busca con toLowerCase(): DINAPI no es constante
+// (el boletín del 2026-11-25 trajo "TRIDIMENSIONAL" en vez de "Tridimensional").
+const SIGNO_POR_NOMBRE = { mixta: 'M', denominativa: 'D', figurativa: 'F', tridimensional: 'T', sonora: 'S' }
 // DINAPI usa UK para el Reino Unido; el código ISO (y el de Nubio) es GB
 const PAIS_ISO = { UK: 'GB' }
 
@@ -41,7 +43,7 @@ function parsearFila(linea) {
         expediente,
         clase_niza: clase,
         denominacion: decodificar(denominacion),
-        signo: SIGNO_POR_NOMBRE[signo] ?? signo,
+        signo: SIGNO_POR_NOMBRE[signo.toLowerCase()] ?? signo,
         titular: decodificar(solicitante),
         pais: PAIS_ISO[pais] ?? pais,
     })
