@@ -5,10 +5,10 @@ import { parseId } from '../utils/id.js'
 import { registrarEvento } from '../utils/eventos.js'
 
 const MAX_IMPORTACION = 1000
-// Tope de marcas por usuario. Un estudio grande vigila cientos o pocos miles
+// Tope de marcas por cuenta. Un estudio grande vigila cientos o pocos miles
 // de marcas; 5000 deja margen. Sin tope, una cuenta podía cargar marcas sin fin:
 // cada una genera trabajo para el motor y filas en Neon (0,5 GB en el plan gratis).
-export const MAX_MARCAS_POR_USUARIO = 5000
+export const MAX_MARCAS_POR_CUENTA = 5000
 // version: sube con cada edición (sql/009_marcas_version.sql). El frontend la
 // devuelve al editar, para saber si otra persona guardó antes.
 // estado, numero_registro, fecha_registro, fecha_vencimiento: datos del
@@ -26,14 +26,19 @@ const FOREIGN_KEY_VIOLATION = '23503'
 // es un dato inválido (400), no un error del servidor (500).
 const CHECK_VIOLATION = '23514'
 
-// El usuario sale SIEMPRE de req.userId, que lo pone el middleware requireAuth
-// después de verificar el token. Si el body trae un user_id, se ignora.
+// La cuenta sale SIEMPRE de req.cuentaId, y el usuario de req.userId: los pone
+// el middleware requireAuth después de verificar el token (la cuenta, leída de
+// la base). Si el body trae un user_id o un cuenta_id, se ignoran.
+//
+// Desde sql/012 las marcas son de la CUENTA (el agente o el estudio): todas
+// las consultas filtran por cuenta_id. user_id queda como "quién la cargó":
+// con el plan para agencias, varias personas comparten las marcas.
 
 // Arma la fila a insertar. Usamos solo los campos que devuelve normalizarMarca,
 // así no se puede colar ninguna otra columna (ej: un "id" o "created_at" en el body).
 // Lo que viene vacío ('') se guarda como NULL: "sin dato", no un texto vacío
 // (y una fecha '' ni siquiera entra en una columna DATE).
-function aFila(marca, userId) {
+function aFila(marca, { cuentaId, userId }) {
     return {
         ...marca,
         denominacion: marca.denominacion || null,
@@ -43,6 +48,7 @@ function aFila(marca, userId) {
         numero_registro: marca.numero_registro || null,
         fecha_registro: marca.fecha_registro || null,
         fecha_vencimiento: marca.fecha_vencimiento || null,
+        cuenta_id: cuentaId,
         user_id: userId,
     }
 }
@@ -54,17 +60,18 @@ function aFila(marca, userId) {
 // 1) Lugar en la fila de alertas: se RESERVA (reservarLugarEnCola) antes de
 //    insertar, en el mismo paso en que se revisa. Si después algo falla, se
 //    libera; si entran menos marcas (duplicadas), se devuelve lo que sobró.
-// 2) Tope de marcas por usuario: el COUNT y el INSERT van en una transacción
-//    con un candado de Postgres por usuario (pg_advisory_xact_lock). Una
-//    segunda importación del mismo usuario espera en la base a que termine la
-//    primera, y cuenta las marcas que esa ya insertó. El candado se suelta solo
-//    al terminar la transacción. Usa dos números: CANDADO_MARCAS dice "esto es
-//    de marcas", así no choca con otro candado futuro que use el id del usuario.
+// 2) Tope de marcas por cuenta: el COUNT y el INSERT van en una transacción
+//    con un candado de Postgres por cuenta (pg_advisory_xact_lock). Una
+//    segunda importación de la misma cuenta (de la misma persona o de otra)
+//    espera en la base a que termine la primera, y cuenta las marcas que esa
+//    ya insertó. El candado se suelta solo al terminar la transacción. Usa dos
+//    números: CANDADO_MARCAS dice "esto es de marcas", así no choca con otro
+//    candado futuro que use el id de la cuenta.
 
 const CANDADO_MARCAS = 1
 
 const MENSAJES_FILA = {
-    usuario: 'Todavía se están generando las alertas de tus marcas anteriores. Probá de nuevo en unos minutos.',
+    cuenta: 'Todavía se están generando las alertas de tus marcas anteriores. Probá de nuevo en unos minutos.',
     servidor: 'El servidor está procesando muchas marcas. Probá de nuevo en unos minutos.',
 }
 
@@ -77,30 +84,30 @@ function responderFilaLlena(res, falta) {
 
 class TopeDeMarcasSuperado extends Error {
     constructor(actuales) {
-        super(`Se pueden cargar hasta ${MAX_MARCAS_POR_USUARIO} marcas por cuenta (tenés ${actuales}).`)
+        super(`Se pueden cargar hasta ${MAX_MARCAS_POR_CUENTA} marcas por cuenta (tenés ${actuales}).`)
         this.actuales = actuales
     }
 }
 
-// Inserta dentro de una transacción con el candado del usuario, después de
+// Inserta dentro de una transacción con el candado de la cuenta, después de
 // comprobar que `nuevas` marcas más no pasan su tope. `insertar(trx)` hace el
 // INSERT con la transacción y devuelve lo que inserte.
-async function insertarConTope(db, userId, nuevas, insertar) {
+async function insertarConTope(db, cuentaId, nuevas, insertar) {
     return db.transaction(async (trx) => {
-        await trx.raw('select pg_advisory_xact_lock(?, ?)', [CANDADO_MARCAS, userId])
-        const { total } = await trx('marcas').where({ user_id: userId }).count('* as total').first()
-        if (Number(total) + nuevas > MAX_MARCAS_POR_USUARIO) throw new TopeDeMarcasSuperado(total)
+        await trx.raw('select pg_advisory_xact_lock(?, ?)', [CANDADO_MARCAS, cuentaId])
+        const { total } = await trx('marcas').where({ cuenta_id: cuentaId }).count('* as total').first()
+        if (Number(total) + nuevas > MAX_MARCAS_POR_CUENTA) throw new TopeDeMarcasSuperado(total)
         return insertar(trx)
     })
 }
 
 export const handleGetMarcas = async (req, res, db) => {
-    const { userId } = req
+    const { cuentaId } = req
 
     try {
         const marcas = await db('marcas')
             .select(COLUMNAS)
-            .where({ user_id: userId })
+            .where({ cuenta_id: cuentaId })
             .orderBy('fecha_solicitud', 'desc')
         res.json(marcas)
     } catch (err) {
@@ -110,7 +117,7 @@ export const handleGetMarcas = async (req, res, db) => {
 }
 
 export const handleCreateMarca = async (req, res, db) => {
-    const { userId } = req
+    const { cuentaId } = req
 
     // Tipos primero (revisión de Case del registro, B1): un objeto o una lista
     // en un campo no llega a normalizarMarca.
@@ -124,12 +131,12 @@ export const handleCreateMarca = async (req, res, db) => {
         return res.status(400).json({ error: Object.values(errores)[0], errores })
     }
 
-    const reserva = reservarLugarEnCola(userId, 1)
+    const reserva = reservarLugarEnCola(cuentaId, 1)
     if (reserva.falta) return responderFilaLlena(res, reserva.falta)
 
     try {
-        const [nueva] = await insertarConTope(db, userId, 1,
-            (trx) => trx('marcas').insert(aFila(marca, userId)).returning(COLUMNAS))
+        const [nueva] = await insertarConTope(db, cuentaId, 1,
+            (trx) => trx('marcas').insert(aFila(marca, req)).returning(COLUMNAS))
         // También por la fila, y sin esperar: si esperáramos y la fila estuviera
         // ocupada con importaciones de otros, este pedido quedaría colgado
         // minutos. Con la fila libre, las alertas están en menos de un segundo.
@@ -174,7 +181,7 @@ const CAMPOS_EDITABLES = ['fecha_solicitud', 'expediente', 'clase_niza', 'denomi
 // Edita una marca (PATCH /marcas/:id): se manda la marca completa (el mismo
 // formulario que el alta, la misma validación) y la `version` que se leyó.
 //
-// Todas las consultas llevan user_id: una marca de otra cuenta responde 404,
+// Todas las consultas llevan cuenta_id: una marca de otra cuenta responde 404,
 // igual que una que no existe, para no revelar que existe.
 //
 // Ediciones simultáneas (revisión de Case, M2 y B3): el UPDATE solo se aplica
@@ -184,7 +191,7 @@ const CAMPOS_EDITABLES = ['fecha_solicitud', 'expediente', 'clase_niza', 'denomi
 // la carrera entre leer `anterior` y el UPDATE: si alguien guardó en el medio,
 // la versión ya no coincide.
 export const handleUpdateMarca = async (req, res, db) => {
-    const { userId } = req
+    const { userId, cuentaId } = req
     const id = parseId(req.params.id)
     if (!id) return res.status(400).json({ error: 'Parámetros inválidos.' })
 
@@ -200,7 +207,7 @@ export const handleUpdateMarca = async (req, res, db) => {
 
     let reserva = null
     try {
-        const anterior = await db('marcas').select(COLUMNAS).where({ id, user_id: userId }).first()
+        const anterior = await db('marcas').select(COLUMNAS).where({ id, cuenta_id: cuentaId }).first()
         if (!anterior) return res.status(404).json({ error: 'Marca no encontrada.' })
         if (anterior.version !== version) return responderModificada(res)
 
@@ -220,27 +227,28 @@ export const handleUpdateMarca = async (req, res, db) => {
         if (Object.keys(errores).length > 0) {
             return res.status(400).json({ error: Object.values(errores)[0], errores })
         }
-        // Sin user_id en el SET (revisión de Case, I1): el WHERE ya fija la
-        // cuenta, y así el UPDATE no puede ni siquiera escribir esa columna.
-        const { user_id: _cuenta, ...cambios } = aFila(marca, userId)
+        // Sin cuenta_id ni user_id en el SET (revisión de Case, I1): el WHERE
+        // ya fija la cuenta, y así el UPDATE no puede ni siquiera escribir esas
+        // columnas. user_id es quién la cargó: editarla no lo cambia.
+        const { cuenta_id: _cuenta, user_id: _cargadaPor, ...cambios } = aFila(marca, req)
 
         // Si hay que regenerar alertas, se reserva lugar en la fila ANTES de
         // guardar, como en el alta: si la fila está llena, no queda una marca
         // cambiada con alertas viejas.
         const regenerar = cambioParaElMotor(anterior, cambios)
         if (regenerar) {
-            reserva = reservarLugarEnCola(userId, 1)
+            reserva = reservarLugarEnCola(cuentaId, 1)
             if (reserva.falta) return responderFilaLlena(res, reserva.falta)
         }
 
         const [actualizada] = await db('marcas')
-            .where({ id, user_id: userId, version })
+            .where({ id, cuenta_id: cuentaId, version })
             .update({ ...cambios, version: db.raw('version + 1') })
             .returning(COLUMNAS)
         if (!actualizada) {
             // Otra persona guardó (o borró) entre la lectura y el UPDATE
             reserva?.liberar()
-            const sigue = await db('marcas').where({ id, user_id: userId }).first('id')
+            const sigue = await db('marcas').where({ id, cuenta_id: cuentaId }).first('id')
             return sigue ? responderModificada(res) : res.status(404).json({ error: 'Marca no encontrada.' })
         }
 
@@ -256,7 +264,7 @@ export const handleUpdateMarca = async (req, res, db) => {
         const camposCambiados = CAMPOS_EDITABLES.filter((c) => String(anterior[c] ?? '') !== String(actualizada[c] ?? ''))
         if (camposCambiados.length > 0) {
             registrarEvento('marca_editada', {
-                usuario: userId, sesion: req.sesionId, ip: req.ip, marca_id: id,
+                usuario: userId, cuenta_id: cuentaId, sesion: req.sesionId, ip: req.ip, marca_id: id,
                 expediente: actualizada.expediente, pais: actualizada.pais, campos_cambiados: camposCambiados,
             })
         }
@@ -289,29 +297,29 @@ function responderModificada(res) {
 // atribuirse a una sesión. Cuenta además cuántas alertas trabajadas (con
 // estado o nota) se perdieron, para saber si importaba.
 export const handleDeleteMarca = async (req, res, db) => {
-    const { userId } = req
+    const { userId, cuentaId } = req
     const id = parseId(req.params.id)
     if (!id) return res.status(400).json({ error: 'Parámetros inválidos.' })
 
     try {
         // En una transacción: primero se cuentan las alertas trabajadas (las de
-        // una marca de OTRA cuenta no se cuentan: el JOIN filtra por user_id) y
+        // una marca de OTRA cuenta no se cuentan: el JOIN filtra por cuenta_id) y
         // después se borra. Así la cuenta es de lo que efectivamente se perdió.
         const resultado = await db.transaction(async (trx) => {
             const { trabajadas } = await trx('alertas as a')
                 .join('marcas as m', 'm.id', 'a.marca_id')
-                .where({ 'm.id': id, 'm.user_id': userId })
+                .where({ 'm.id': id, 'm.cuenta_id': cuentaId })
                 .where((q) => q.whereNot('a.estado', 'nueva').orWhereNotNull('a.nota'))
                 .count('* as trabajadas')
                 .first()
-            const [borrada] = await trx('marcas').where({ id, user_id: userId }).del().returning(['expediente', 'pais'])
+            const [borrada] = await trx('marcas').where({ id, cuenta_id: cuentaId }).del().returning(['expediente', 'pais'])
             return borrada ? { ...borrada, trabajadas: Number(trabajadas) } : null
         })
         if (!resultado) return res.status(404).json({ error: 'Marca no encontrada.' })
 
         res.locals.escrituraPesada = true // cuenta para limitadorEscrituraMarcas
         registrarEvento('marca_borrada', {
-            usuario: userId, sesion: req.sesionId, ip: req.ip, marca_id: id,
+            usuario: userId, cuenta_id: cuentaId, sesion: req.sesionId, ip: req.ip, marca_id: id,
             expediente: resultado.expediente, pais: resultado.pais, alertas_trabajadas: resultado.trabajadas,
         })
         res.status(204).end()
@@ -322,7 +330,7 @@ export const handleDeleteMarca = async (req, res, db) => {
 }
 
 export const handleCreateMarcasBulk = async (req, res, db) => {
-    const { userId } = req
+    const { cuentaId } = req
 
     const { marcas } = req.body
     if (!Array.isArray(marcas) || marcas.length === 0) {
@@ -361,15 +369,15 @@ export const handleCreateMarcasBulk = async (req, res, db) => {
     // Reserva por las válidas, aunque algunas resulten duplicadas: es
     // conservador (puede rechazar un poco antes del tope exacto), pero nunca
     // se pasa. Lo que sobre se devuelve al encolar.
-    const reserva = reservarLugarEnCola(userId, validas.length)
+    const reserva = reservarLugarEnCola(cuentaId, validas.length)
     if (reserva.falta) return responderFilaLlena(res, reserva.falta)
 
     try {
         // 2) Un solo INSERT con todas las filas. ON CONFLICT DO NOTHING saltea las
         // que ya existen (o que vienen repetidas en el mismo archivo) sin abortar el resto.
-        const insertadas = await insertarConTope(db, userId, validas.length, (trx) => trx('marcas')
-            .insert(validas.map((v) => aFila(v.marca, userId)))
-            .onConflict(['user_id', 'pais', 'expediente'])
+        const insertadas = await insertarConTope(db, cuentaId, validas.length, (trx) => trx('marcas')
+            .insert(validas.map((v) => aFila(v.marca, req)))
+            .onConflict(['cuenta_id', 'pais', 'expediente'])
             .ignore()
             .returning(['id', 'pais', 'expediente']))
 

@@ -32,7 +32,7 @@ beforeEach(() => {
     filtradas.clear()
     tablas = {
         login: [{ email: 'ana@estudio.com', hash: hashActual }],
-        users: [{ id: 7, name: 'Ana Pérez', email: 'ana@estudio.com', joined: '2026-01-01', token_version: 0 }],
+        users: [{ id: 7, name: 'Ana Pérez', email: 'ana@estudio.com', joined: '2026-01-01', token_version: 0, cuenta_id: 1 }],
     }
     reiniciarVersiones()
 })

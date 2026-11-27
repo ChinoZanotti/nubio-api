@@ -246,32 +246,34 @@ export async function generarAlertasParaMarcas(db, marcaIds, { regenerar = false
 // se generan. `npm run recalcular-alertas` las recupera (compara cada boletín
 // contra todas las marcas).
 //
-// Tope POR USUARIO (tercera revisión de Case, M4): con solo el tope global, una
-// cuenta llenaba las 5000 plazas con 5 importaciones y todos los demás recibían
-// 503 durante ~13 minutos. Con 1000 por usuario (lo que entra en una
-// importación), una cuenta usa como mucho un 20% de la fila: tiene que esperar
-// a que terminen sus alertas antes de importar de nuevo.
+// Tope POR CUENTA (tercera revisión de Case, M4; por cuenta y no por usuario
+// desde sql/012): con solo el tope global, una cuenta llenaba las 5000 plazas
+// con 5 importaciones y todos los demás recibían 503 durante ~13 minutos. Con
+// 1000 por cuenta (lo que entra en una importación), una cuenta usa como mucho
+// un 20% de la fila: tiene que esperar a que terminen sus alertas antes de
+// importar de nuevo. Por cuenta: con varias personas en un estudio, el tope es
+// del estudio, no se multiplica por cada una.
 export const MAX_MARCAS_EN_COLA = 5000
-export const MAX_MARCAS_EN_COLA_POR_USUARIO = 1000
+export const MAX_MARCAS_EN_COLA_POR_CUENTA = 1000
 let cola = Promise.resolve()
 let marcasEnCola = 0
-const marcasEnColaPorUsuario = new Map() // userId -> marcas pendientes
+const marcasEnColaPorCuenta = new Map() // cuentaId -> marcas pendientes
 
-// ¿Entran `cantidad` marcas más de este usuario? Devuelve null si entran, o el
-// motivo: 'usuario' (sus propias alertas todavía se están generando) o
+// ¿Entran `cantidad` marcas más de esta cuenta? Devuelve null si entran, o el
+// motivo: 'cuenta' (sus propias alertas todavía se están generando) o
 // 'servidor' (la fila está llena con las de todos).
-export function faltaLugarEnCola(userId, cantidad) {
-    if ((marcasEnColaPorUsuario.get(userId) ?? 0) + cantidad > MAX_MARCAS_EN_COLA_POR_USUARIO) return 'usuario'
+export function faltaLugarEnCola(cuentaId, cantidad) {
+    if ((marcasEnColaPorCuenta.get(cuentaId) ?? 0) + cantidad > MAX_MARCAS_EN_COLA_POR_CUENTA) return 'cuenta'
     if (marcasEnCola + cantidad > MAX_MARCAS_EN_COLA) return 'servidor'
     return null
 }
 
-function sumarEnCola(userId, cantidad) {
+function sumarEnCola(cuentaId, cantidad) {
     marcasEnCola += cantidad
-    const nuevo = (marcasEnColaPorUsuario.get(userId) ?? 0) + cantidad
-    // Al llegar a 0 se borra la entrada: el Map no crece con cada usuario que pasó.
-    if (nuevo > 0) marcasEnColaPorUsuario.set(userId, nuevo)
-    else marcasEnColaPorUsuario.delete(userId)
+    const nuevo = (marcasEnColaPorCuenta.get(cuentaId) ?? 0) + cantidad
+    // Al llegar a 0 se borra la entrada: el Map no crece con cada cuenta que pasó.
+    if (nuevo > 0) marcasEnColaPorCuenta.set(cuentaId, nuevo)
+    else marcasEnColaPorCuenta.delete(cuentaId)
 }
 
 // Reserva lugar en la fila ANTES de insertar (tercera revisión de Case, B3).
@@ -280,43 +282,43 @@ function sumarEnCola(userId, cantidad) {
 // chequeo y se pasaban del tope. Revisar y reservar en el mismo paso, sin await
 // en el medio, no deja carrera (Node corre este código de a un pedido por vez).
 //
-// Devuelve { falta } si no hay lugar ('usuario' | 'servidor'). Si hay, devuelve
+// Devuelve { falta } si no hay lugar ('cuenta' | 'servidor'). Si hay, devuelve
 // { falta: null, encolar, liberar }:
 // - encolar(db, ids, opciones): encola lo que efectivamente se insertó y devuelve
 //   lo que sobró de la reserva (por ejemplo, marcas duplicadas que no entraron).
 //   opciones = { regenerar } (ver generarAlertasParaMarcas);
 // - liberar(): devuelve toda la reserva, si algo falló antes de encolar.
 // Usar una sola de las dos, una sola vez.
-export function reservarLugarEnCola(userId, cantidad) {
-    const falta = faltaLugarEnCola(userId, cantidad)
+export function reservarLugarEnCola(cuentaId, cantidad) {
+    const falta = faltaLugarEnCola(cuentaId, cantidad)
     if (falta) return { falta }
-    sumarEnCola(userId, cantidad)
+    sumarEnCola(cuentaId, cantidad)
     let usada = false
     return {
         falta: null,
         encolar(db, marcaIds, opciones) {
             if (usada) return
             usada = true
-            sumarEnCola(userId, -(cantidad - marcaIds.length))
-            return encolarReservado(db, marcaIds, userId, opciones)
+            sumarEnCola(cuentaId, -(cantidad - marcaIds.length))
+            return encolarReservado(db, marcaIds, cuentaId, opciones)
         },
         liberar() {
             if (usada) return
             usada = true
-            sumarEnCola(userId, -cantidad)
+            sumarEnCola(cuentaId, -cantidad)
         },
     }
 }
 
 // Encola sin chequear el tope (lo usan los tests y la reserva de arriba).
-export function encolarAlertasParaMarcas(db, marcaIds, userId) {
-    sumarEnCola(userId, marcaIds.length)
-    return encolarReservado(db, marcaIds, userId)
+export function encolarAlertasParaMarcas(db, marcaIds, cuentaId) {
+    sumarEnCola(cuentaId, marcaIds.length)
+    return encolarReservado(db, marcaIds, cuentaId)
 }
 
 // El lugar ya está sumado en los contadores: acá solo se encola el trabajo y,
 // al terminar, se descuenta.
-function encolarReservado(db, marcaIds, userId, opciones) {
+function encolarReservado(db, marcaIds, cuentaId, opciones) {
     const cantidad = marcaIds.length
     if (cantidad === 0) return cola
     cola = cola
@@ -327,6 +329,6 @@ function encolarReservado(db, marcaIds, userId, opciones) {
         })
         .catch((err) => registrarError('Generación de alertas', err))
         // finally: se descuenta tanto si el trabajo salió bien como si falló.
-        .finally(() => sumarEnCola(userId, -cantidad))
+        .finally(() => sumarEnCola(cuentaId, -cantidad))
     return cola
 }

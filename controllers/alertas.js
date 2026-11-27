@@ -5,8 +5,9 @@ import { parseId } from '../utils/id.js'
 const ESTADOS = ['nueva', 'en_revision', 'a_oponer', 'descartada']
 const LARGO_MAXIMO_NOTA = 2000
 
-// El id de la alerta viene en la URL (parseId); el usuario sale de req.userId,
-// que pone el middleware requireAuth.
+// El id de la alerta viene en la URL (parseId); la cuenta sale de req.cuentaId,
+// que pone el middleware requireAuth. Las alertas no tienen cuenta propia: son
+// de la cuenta de su marca (JOIN con marcas, filtro por m.cuenta_id).
 
 // Filas planas: los datos de mi marca llevan prefijo "mi_" y los del boletín
 // usan los mismos nombres que en /boletines/marcas.
@@ -17,14 +18,14 @@ const COLUMNAS = [
 ]
 
 export const handleGetAlertas = async (req, res, db) => {
-    const { userId } = req
+    const { cuentaId } = req
 
     try {
         const filas = await db('alertas as a')
             .join('marcas as m', 'm.id', 'a.marca_id')
             .join('boletin_marcas as b', 'b.id', 'a.boletin_marca_id')
             .select(COLUMNAS)
-            .where('m.user_id', userId)
+            .where('m.cuenta_id', cuentaId)
             // las nuevas primero; dentro de cada estado, las más parecidas
             .orderByRaw(`a.estado = 'nueva' desc, a.score desc, b.fecha_publicacion desc`)
 
@@ -69,13 +70,13 @@ export function resumirAlertas(grupos, hoyPy) {
 // alertas. La base devuelve una fila por fecha de boletín (pocas, porque las
 // alertas llegan en tandas) y el plazo se calcula una vez por fecha.
 export const handleResumenAlertas = async (req, res, db) => {
-    const { userId } = req
+    const { cuentaId } = req
 
     try {
         const grupos = await db('alertas as a')
             .join('marcas as m', 'm.id', 'a.marca_id')
             .join('boletin_marcas as b', 'b.id', 'a.boletin_marca_id')
-            .where('m.user_id', userId)
+            .where('m.cuenta_id', cuentaId)
             .where('a.estado', 'nueva')
             .groupBy('b.fecha_publicacion')
             .select('b.fecha_publicacion')
@@ -89,7 +90,7 @@ export const handleResumenAlertas = async (req, res, db) => {
 }
 
 export const handleUpdateAlerta = async (req, res, db) => {
-    const { userId } = req
+    const { cuentaId } = req
     const id = parseId(req.params.id)
     if (!id) {
         return res.status(400).json({ error: 'Parámetros inválidos.' })
@@ -115,11 +116,11 @@ export const handleUpdateAlerta = async (req, res, db) => {
     }
 
     try {
-        // El WHERE con subconsulta asegura que la alerta sea de una marca del usuario.
+        // El WHERE con subconsulta asegura que la alerta sea de una marca de la cuenta.
         // Si no lo es, no se actualiza nada y respondemos 404 (sin revelar si existe).
         const [actualizada] = await db('alertas')
             .where({ id })
-            .whereIn('marca_id', db('marcas').select('id').where({ user_id: userId }))
+            .whereIn('marca_id', db('marcas').select('id').where({ cuenta_id: cuentaId }))
             .update({ ...cambios, updated_at: db.fn.now() })
             .returning(['id', 'estado', 'nota'])
 

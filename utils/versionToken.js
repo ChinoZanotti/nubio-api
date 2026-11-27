@@ -23,7 +23,9 @@ const TTL_MS = 30 * 1000
 // recuerda el orden de inserción). Sobra para los usuarios reales de Nubio.
 const MAX_ENTRADAS = 10_000
 
-const cache = new Map() // userId -> { tv, hasta (ms) }
+// Guarda también la cuenta del usuario (users.cuenta_id, sql/012): requireAuth
+// la necesita en cada pedido, y así sale de la misma consulta y del mismo caché.
+const cache = new Map() // userId -> { tv, cuentaId, hasta (ms) }
 
 // Guarda la versión de un usuario. Mientras la entrada está vigente, NO la
 // baja. Importa por esta carrera: un pedido consulta la base y lee 0; mientras
@@ -33,29 +35,40 @@ const cache = new Map() // userId -> { tv, hasta (ms) }
 // en la base (un restore de Neon, un UPDATE a mano), la base manda. Si no, el
 // usuario quedaba afuera hasta reiniciar el servidor: signin firmaba con la
 // versión de la base y requireAuth comparaba con la del caché.
-export function recordar(userId, tv, ahora = Date.now()) {
+// cuentaId: si no se pasa, se conserva la que ya estaba.
+export function recordar(userId, tv, cuentaId, ahora = Date.now()) {
     const previo = cache.get(userId)
     if (previo && previo.hasta > ahora && previo.tv > tv) return
     cache.delete(userId)
-    cache.set(userId, { tv, hasta: ahora + TTL_MS })
+    cache.set(userId, { tv, cuentaId: cuentaId ?? previo?.cuentaId, hasta: ahora + TTL_MS })
     if (cache.size > MAX_ENTRADAS) cache.delete(cache.keys().next().value)
 }
 
-// Devuelve la token_version del usuario, o null si el usuario ya no existe.
+// Devuelve { tv, cuentaId } del usuario, o null si el usuario ya no existe.
 // `ahora` se puede pasar en los tests para no depender del reloj real.
-export async function versionVigente(db, userId, ahora = Date.now()) {
+export async function sesionVigente(db, userId, ahora = Date.now()) {
     const enCache = cache.get(userId)
-    if (enCache && enCache.hasta > ahora) return enCache.tv
+    if (enCache && enCache.hasta > ahora && enCache.cuentaId != null) {
+        return { tv: enCache.tv, cuentaId: enCache.cuentaId }
+    }
 
-    const fila = await db('users').select('token_version').where({ id: userId }).first()
+    const fila = await db('users').select('token_version', 'cuenta_id').where({ id: userId }).first()
     if (!fila) {
         cache.delete(userId)
         return null
     }
-    recordar(userId, fila.token_version, ahora)
+    recordar(userId, fila.token_version, fila.cuenta_id, ahora)
     // Lo que quedó en el caché, no lo leído: si mientras tanto alguien subió
-    // la versión, gana la nueva (ver recordar).
-    return cache.get(userId).tv
+    // la versión, gana la nueva (ver recordar). La cuenta, la leída.
+    return { tv: cache.get(userId).tv, cuentaId: fila.cuenta_id }
+}
+
+// Solo la versión (la usan los tests de la revocación).
+export async function versionVigente(db, userId, ahora = Date.now()) {
+    const enCache = cache.get(userId)
+    if (enCache && enCache.hasta > ahora) return enCache.tv
+    const sesion = await sesionVigente(db, userId, ahora)
+    return sesion === null ? null : sesion.tv
 }
 
 // Solo para los tests.

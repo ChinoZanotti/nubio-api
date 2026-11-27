@@ -34,15 +34,20 @@ export const handleRegister = async (req, res, db, bcrypt) => {
 
         const hash = await bcrypt.hash(password, COSTO_BCRYPT)
 
-        const user = await db.transaction(async (trx) => {
+        // Quien se registra crea su propia cuenta (sql/012), con su nombre y el
+        // plan básico. Las tres filas en la misma transacción: no queda una
+        // cuenta sin usuario ni un usuario sin cuenta.
+        const { user, cuentaId } = await db.transaction(async (trx) => {
             await trx('login').insert({ hash, email })
+            const [cuenta] = await trx('cuentas').insert({ nombre: name }).returning('id')
             const [nuevo] = await trx('users')
-                .insert({ email, name, joined: new Date() })
+                .insert({ email, name, joined: new Date(), cuenta_id: cuenta.id })
                 .returning(['id', 'name', 'email', 'joined'])
-            return nuevo
+            return { user: nuevo, cuentaId: cuenta.id }
         })
 
-        registrarEvento('registro_ok', { email, ip: req.ip, usuario: user.id })
+        // La cuenta va al evento (auditoría por estudio), no al cliente
+        registrarEvento('registro_ok', { email, ip: req.ip, usuario: user.id, cuenta_id: cuentaId })
         res.json(user)
     } catch (err) {
         // Email ya registrado. Mensaje genérico al usuario y evento sin el email

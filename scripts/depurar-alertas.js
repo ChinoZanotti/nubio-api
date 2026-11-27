@@ -72,7 +72,7 @@ async function main() {
             .join('boletin_marcas as b', 'b.id', 'a.boletin_marca_id')
             .select(
                 'a.id', 'a.marca_id', 'a.boletin_marca_id', 'a.score', 'a.nivel', 'a.motivos', 'a.relacion_clase',
-                'a.estado', 'a.nota', 'a.created_at', 'a.updated_at', 'm.user_id',
+                'a.estado', 'a.nota', 'a.created_at', 'a.updated_at', 'm.cuenta_id',
                 'm.expediente as m_expediente', 'm.clase_niza as m_clase', 'm.denominacion as m_denominacion',
                 'm.signo as m_signo', 'm.titular as m_titular', 'm.pais as m_pais',
                 'b.expediente as b_expediente', 'b.clase_niza as b_clase', 'b.denominacion as b_denominacion',
@@ -102,7 +102,7 @@ async function main() {
                 if (intacta(f)) {
                     aBorrar.push({ ...f, motivo: descarte })
                     porMotivo[descarte] = (porMotivo[descarte] ?? 0) + 1
-                    porCuenta[f.user_id] = (porCuenta[f.user_id] ?? 0) + 1
+                    porCuenta[f.cuenta_id] = (porCuenta[f.cuenta_id] ?? 0) + 1
                 } else {
                     tocadasQueNoCorresponden++
                 }

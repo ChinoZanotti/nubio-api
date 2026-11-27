@@ -57,12 +57,14 @@ test('un token vencido se rechaza', () => {
 
 // --- requireAuth, con una base falsa ---
 
-// users: id -> token_version. `consultas` cuenta los SELECT (para el caché).
+// users: id -> token_version, y id -> cuenta_id. `consultas` cuenta los SELECT (para el caché).
 let versiones
+let cuentas
 let consultas
 beforeEach(() => {
     reiniciarVersiones()
     versiones = new Map([[7, 0]])
+    cuentas = new Map([[7, 3]])
     consultas = 0
 })
 const dbFalsa = () => ({
@@ -70,7 +72,9 @@ const dbFalsa = () => ({
     where({ id }) { this.id = id; return this },
     first() {
         consultas += 1
-        return Promise.resolve(versiones.has(this.id) ? { token_version: versiones.get(this.id) } : undefined)
+        return Promise.resolve(versiones.has(this.id)
+            ? { token_version: versiones.get(this.id), cuenta_id: cuentas.get(this.id) ?? null }
+            : undefined)
     },
 })
 const requireAuth = crearRequireAuth((tabla) => dbFalsa(tabla))
@@ -87,10 +91,25 @@ async function correrMiddleware(authorization) {
     return { req, res, siguio }
 }
 
-test('requireAuth deja pasar con token válido y pone req.userId', async () => {
+test('requireAuth deja pasar con token válido y pone req.userId y la cuenta de la base', async () => {
     const { req, siguio } = await correrMiddleware(`Bearer ${firmarToken(7, 0)}`)
     assert.equal(siguio, true)
     assert.equal(req.userId, 7)
+    assert.equal(req.cuentaId, 3)
+})
+
+test('requireAuth corta con 401 si el usuario no tiene cuenta', async () => {
+    cuentas.delete(7)
+    const { res, siguio } = await correrMiddleware(`Bearer ${firmarToken(7, 0)}`)
+    assert.equal(siguio, false)
+    assert.equal(res.codigo, 401)
+})
+
+test('la cuenta sale de la base aunque el caché tenga la versión sin cuenta', async () => {
+    recordar(7, 0) // como handleCambiarPassword sin cuenta: no hay de dónde sacarla
+    const { req, siguio } = await correrMiddleware(`Bearer ${firmarToken(7, 0)}`)
+    assert.equal(siguio, true)
+    assert.equal(req.cuentaId, 3)
 })
 
 test('requireAuth corta con 401 sin token o con token inválido', async () => {
