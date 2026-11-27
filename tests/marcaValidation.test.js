@@ -124,3 +124,21 @@ test('B4: fechas fuera de rango', () => {
 test('el error del vencimiento dice la fecha de registro', () => {
     assert.match(conRegistro({ fecha_registro: '2014-08-20', fecha_vencimiento: '2014-08-20' }).fecha_vencimiento, /posterior al 20\/08\/2014/)
 })
+
+// ===== Signo opcional (sql/011_marcas_signo_opcional.sql) =====
+test('signo: puede faltar si hay denominación', () => {
+    assert.deepEqual(validarMarca(normalizarMarca({ ...valida, signo: '' })), {})
+    assert.deepEqual(validarMarca(normalizarMarca({ ...valida, signo: null })), {})
+    assert.deepEqual(validarMarca(normalizarMarca({ ...valida, signo: undefined })), {})
+})
+
+test('signo: sin signo y sin denominación se rechaza, con las dos salidas en el mensaje', () => {
+    const e = validarMarca(normalizarMarca({ ...valida, signo: '', denominacion: '' }))
+    assert.match(e.denominacion, /o elegí un signo figurativo/)
+    assert.equal(e.signo, undefined)
+})
+
+test('signo: si viene, tiene que ser una de las cinco letras', () => {
+    assert.match(validarMarca(normalizarMarca({ ...valida, signo: 'X' })).signo, /M, D, F, T o S/)
+    assert.deepEqual(validarMarca(normalizarMarca({ ...valida, signo: 'm' })), {}) // se pasa a mayúscula
+})

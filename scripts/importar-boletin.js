@@ -52,6 +52,11 @@ function parsearFila(linea) {
         return { error: Object.values(errores).join(' ') }
     }
     if (!tramite) return { error: 'Falta el trámite.' }
+    // En las marcas propias el signo es opcional (sql/011), pero en
+    // boletin_marcas sigue siendo obligatorio: DINAPI siempre lo publica. Sin
+    // este chequeo, una fila sin signo pasaría validarMarca y haría fallar el
+    // INSERT del boletín entero.
+    if (!marca.signo) return { error: 'Falta el signo.' }
 
     // Campos explícitos y no `...marca`: normalizarMarca también devuelve los de
     // las marcas propias (estado, numero_registro...), que boletin_marcas no

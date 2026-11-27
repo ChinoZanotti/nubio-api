@@ -37,6 +37,8 @@ function aFila(marca, userId) {
     return {
         ...marca,
         denominacion: marca.denominacion || null,
+        // Sin signo = NULL (es opcional desde sql/011): '' no entra en CHAR(1) con su CHECK
+        signo: marca.signo || null,
         estado: marca.estado || null,
         numero_registro: marca.numero_registro || null,
         fecha_registro: marca.fecha_registro || null,

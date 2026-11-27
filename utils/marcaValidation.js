@@ -176,13 +176,20 @@ export function validarMarca(marca) {
     errores.clase_niza = `La clase debe ser un número entre ${CLASE_MIN} y ${CLASE_MAX}.`
   }
 
-  if (!SIGNOS[marca.signo]) {
+  // El signo es opcional (sql/011_marcas_signo_opcional.sql): el listado de
+  // DINAPI con que el estudio importa su cartera no lo trae. Si viene, tiene
+  // que ser una de las cinco letras.
+  if (marca.signo && !SIGNOS[marca.signo]) {
     errores.signo = 'El signo debe ser M, D, F, T o S.'
   }
 
-  // Figurativas, tridimensionales y sonoras pueden no tener texto.
+  // Figurativas, tridimensionales y sonoras pueden no tener texto. Sin signo,
+  // la denominación es obligatoria: si no, quedaría una marca sin texto ni
+  // tipo. El mensaje dice las dos salidas posibles.
   if (!marca.denominacion && !SIGNOS_SIN_TEXTO.includes(marca.signo)) {
-    errores.denominacion = 'Ingresá la denominación.'
+    errores.denominacion = marca.signo
+      ? 'Ingresá la denominación.'
+      : 'Ingresá la denominación, o elegí un signo figurativo, tridimensional o sonoro.'
   } else if (marca.denominacion.length > LARGO_MAXIMO_DENOMINACION) {
     errores.denominacion = `La denominación puede tener hasta ${LARGO_MAXIMO_DENOMINACION} caracteres.`
   }

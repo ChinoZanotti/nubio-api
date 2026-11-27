@@ -36,7 +36,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - `expediente` TEXT NOT NULL, CHECK solo dígitos. Es TEXT a propósito, para conservar ceros a la izquierda.
   - `clase_niza` SMALLINT NOT NULL, CHECK 1..45
   - `denominacion` TEXT, nullable
-  - `signo` CHAR(1) NOT NULL, CHECK `marcas_signo_valido`: M (Mixta), D (Denominativa), F (Figurativa), T (Tridimensional), S (Sonora). T y S se agregaron con `sql/004_signos_tridimensional_sonora.sql`; las letras están confirmadas en el buscador de DINAPI.
+  - `signo` CHAR(1), **opcional** desde `sql/011_marcas_signo_opcional.sql` (noviembre 2026: el estudio importa su cartera de un listado de DINAPI sin el tipo de signo y no tiene el dato; inventarlo sería cargar un dato falso). NULL = sin dato. En `boletin_marcas` sigue siendo obligatorio, y `importar-boletin.js` lo exige aparte (`validarMarca` ya no). CHECK `marcas_signo_valido`: M (Mixta), D (Denominativa), F (Figurativa), T (Tridimensional), S (Sonora). T y S se agregaron con `sql/004_signos_tridimensional_sonora.sql`; las letras están confirmadas en el buscador de DINAPI.
   - `titular` TEXT NOT NULL
   - `pais` CHAR(2) NOT NULL, código ISO 3166-1 alfa-2, más dos códigos propios de DINAPI: `XX` (sin especificar) y `EP` (Unión Europea).
   - `created_at` TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -46,7 +46,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
     - `numero_registro` TEXT, solo dígitos, hasta 20.
     - `fecha_registro` DATE (no futura) y `fecha_vencimiento` DATE, posterior al registro si están los dos (CHECK `marcas_vencimiento_posterior`). El registro NO se compara con `fecha_solicitud`: en datos reales hay registros anteriores a la solicitud cargada (renovaciones).
     - Vacíos se guardan como NULL (`aFila`). El motor no los usa: editarlos no regenera alertas.
-  - CHECK `marcas_denominacion_obligatoria`: solo F, T y S pueden no tener denominación (`SIGNOS_SIN_TEXTO`).
+  - CHECK `marcas_denominacion_obligatoria`: solo F, T y S pueden no tener denominación (`SIGNOS_SIN_TEXTO`). Sin signo, la denominación es obligatoria (no puede quedar una marca sin texto ni tipo). Usa `COALESCE(signo, '')`: `NULL IN (...)` da NULL, y un CHECK con NULL cuenta como aprobado. Para el motor, una marca sin signo y con denominación se compara como cualquier otra.
   - UNIQUE (user_id, pais, expediente): evita duplicados, y su índice también cubre las consultas por `user_id`.
 
 - `boletin_marcas` (creada con `sql/002_boletin_marcas.sql`): marcas publicadas en los boletines de DINAPI. Son públicas, sin `user_id`.
