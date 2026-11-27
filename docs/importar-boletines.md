@@ -1,7 +1,9 @@
 # Importar boletines diarios de DINAPI
 
 Pasos para cargar en producción los boletines **diarios** (`boletin_marcas_principales_aaaa-mm-dd.csv`).
-Todos los comandos son para **PowerShell** y se corren desde `c:\dev\nubio-api`.
+Todos los comandos son para **PowerShell** y se corren desde `c:\dev\nubio-api-produccion`.
+
+> **Por qué esa carpeta** (noviembre 2026): es una segunda copia del repo (`git worktree`) que está siempre en `main`, el código que corre en producción. `c:\dev\nubio-api` se usa para desarrollar y puede estar en otra rama, con cambios a medias: un importador de esa rama podría fallar contra Neon o generar alertas con un motor que todavía no está deployado. Las dos carpetas comparten la historia de Git: un commit hecho en una se ve en la otra. Antes de importar, `git pull` en esta carpeta para tener el último `main`.
 
 > ⚠️ No abras los CSV con Excel ni los guardes desde ahí: convierte números en fechas ("595" → "17/08/1901") y borra ceros a la izquierda. Para mirarlos, VS Code.
 
@@ -10,7 +12,8 @@ Todos los comandos son para **PowerShell** y se corren desde `c:\dev\nubio-api`.
 ## 1. Ver cuál fue el último boletín cargado
 
 ```powershell
-cd c:\dev\nubio-api
+cd c:\dev\nubio-api-produccion
+git pull
 Get-ChildItem data\boletines\*.csv | Select-Object -Last 3 -ExpandProperty Name
 ```
 

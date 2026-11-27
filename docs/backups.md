@@ -60,7 +60,7 @@ BACKUP_DIR=C:\Users\cezan\Backups\nubio
 Probarlo a mano:
 
 ```powershell
-cd C:\dev\nubio-api
+cd C:\dev\nubio-api-produccion
 npm run backup
 ```
 
@@ -71,7 +71,7 @@ Tiene que terminar con `Listo: ...nubio-aaaa-mm-dd_hhmmss.dump (x MB, 5 tablas c
 PowerShell, una sola vez:
 
 ```powershell
-$accion = New-ScheduledTaskAction -Execute "cmd.exe" -Argument '/c "cd /d C:\dev\nubio-api && npm run backup >> %USERPROFILE%\.nubio\backup.log 2>&1"'
+$accion = New-ScheduledTaskAction -Execute "cmd.exe" -Argument '/c "cd /d C:\dev\nubio-api-produccion && npm run backup >> %USERPROFILE%\.nubio\backup.log 2>&1"'
 $cuando = New-ScheduledTaskTrigger -Daily -At 13:00
 $opciones = New-ScheduledTaskSettingsSet -StartWhenAvailable
 Register-ScheduledTask -TaskName "Nubio backup" -Action $accion -Trigger $cuando -Settings $opciones
@@ -80,7 +80,7 @@ Register-ScheduledTask -TaskName "Nubio backup" -Action $accion -Trigger $cuando
 - Corre todos los días a las 13:00. `-StartWhenAvailable` hace que, si a esa hora la computadora estaba apagada, corra apenas se prenda.
 - Correrlo ya, para probar: `Start-ScheduledTask -TaskName "Nubio backup"`, y después mirar `$env:USERPROFILE\.nubio\backup.log`.
 - Borrar la tarea: `Unregister-ScheduledTask -TaskName "Nubio backup"`.
-- Corre el script que haya en `C:\dev\nubio-api` en ese momento: no dejar ese repo con cambios a medias en el script de backup.
+- Corre el script que haya en `C:\dev\nubio-api-produccion` en ese momento: la copia del repo que está siempre en `main` (ver `importar-boletines.md`). No desde `C:\dev\nubio-api`, que puede estar en otra rama con cambios a medias.
 
 ## 4. Restaurar
 
