@@ -14,11 +14,15 @@ import helmet from 'helmet'
 // FRONTEND_URL: uno o varios orígenes separados por coma, sin barra final.
 // Un origen es protocolo + dominio + puerto: "https://nubio.onrender.com".
 // En local: "http://localhost:5173" (el puerto de Vite).
-function origenesPermitidos() {
-    const lista = (process.env.FRONTEND_URL ?? '')
+function listaDeOrigenes(variable) {
+    return (process.env[variable] ?? '')
         .split(',')
         .map((o) => o.trim().replace(/\/$/, ''))
         .filter(Boolean)
+}
+
+function origenesPermitidos() {
+    const lista = listaDeOrigenes('FRONTEND_URL')
     if (lista.length === 0) {
         throw new Error('FRONTEND_URL no está definido (ej: https://nubio.onrender.com).')
     }
@@ -27,9 +31,9 @@ function origenesPermitidos() {
 
 // Se llama al arrancar: sin FRONTEND_URL el servidor no levanta, así nunca
 // queda abierto a todos por olvidarse la variable.
-export function corsNubio() {
-    return cors({
-        origin: origenesPermitidos(),
+function opcionesCors(origin) {
+    return {
+        origin,
         // Solo lo que usa el frontend. Authorization lleva el token JWT.
         // DELETE: borrar una marca (Mis marcas).
         methods: ['GET', 'POST', 'PATCH', 'DELETE'],
@@ -41,7 +45,43 @@ export function corsNubio() {
         // puede (un pedido OPTIONS, el "preflight"). Con esto recuerda la
         // respuesta 10 minutos en vez de preguntar cada vez.
         maxAge: 600,
-    })
+    }
+}
+
+export function corsNubio() {
+    return cors(opcionesCors(origenesPermitidos()))
+}
+
+// --- Panel comercial (etapa 2) ---
+// El panel vive en otro sitio (otro origen) y sus rutas van bajo /admin. CORS
+// separado (revisión de Case, M6): /admin solo acepta el origen del panel
+// (ADMIN_FRONTEND_URL) y el resto de la API solo el de la app. Así, la app de
+// clientes no puede llamar al panel desde el navegador, ni el panel a la app.
+// Si falta la configuración del panel, las rutas /admin no se montan (server.js):
+// el panel queda apagado, no abierto.
+// Sin distinguir mayúsculas (revisión de Case de la etapa 2, M1): Express, por
+// defecto, manda /ADMIN/... al router del panel; si este chequeo las distinguiera,
+// esos pedidos llevarían el CORS de la app. Además server.js activa
+// 'case sensitive routing' (y el router del panel, caseSensitive), así /ADMIN/... ni
+// siquiera llega al panel: da 404.
+export const esRutaAdmin = (req) => /^\/admin(\/|$)/i.test(req.path)
+
+export function corsPorRuta({ conPanel }) {
+    const app = corsNubio()
+    const panel = conPanel ? cors(opcionesCors(listaDeOrigenes('ADMIN_FRONTEND_URL'))) : null
+    return (req, res, next) => {
+        if (esRutaAdmin(req)) return panel ? panel(req, res, next) : next()
+        return app(req, res, next)
+    }
+}
+
+export const panelConfigurado = () => listaDeOrigenes('ADMIN_FRONTEND_URL').length > 0
+
+// El panel y la app tienen que estar en orígenes distintos: si coincidieran,
+// se perdería la separación sin que nadie lo note (Case, informativo de la etapa 2).
+export function origenesSeSolapan() {
+    const app = new Set(listaDeOrigenes('FRONTEND_URL').map((o) => o.toLowerCase()))
+    return listaDeOrigenes('ADMIN_FRONTEND_URL').some((o) => app.has(o.toLowerCase()))
 }
 
 // --- Helmet ---

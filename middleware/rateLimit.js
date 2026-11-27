@@ -178,7 +178,8 @@ export const limitadorGeneral = limitador('general', {
     windowMs: QUINCE_MINUTOS,
     limit: 500,
     skipSuccessfulRequests: true,
-    requestWasSuccessful: (req) => req.userId !== undefined,
+    // Con sesión de cliente (req.userId) o de operador del panel (req.operadorId)
+    requestWasSuccessful: (req) => req.userId !== undefined || req.operadorId !== undefined,
     message: { error: 'Demasiados pedidos. Esperá unos minutos y volvé a probar.' },
 })
 
@@ -193,5 +194,44 @@ export const limitadorUsuario = limitador('usuario', {
     windowMs: QUINCE_MINUTOS,
     limit: 1500,
     keyGenerator: (req) => `usuario:${req.userId}`,
+    message: { error: 'Demasiados pedidos. Esperá unos minutos y volvé a probar.' },
+})
+
+// --- Panel comercial (etapa 2) ---
+// Más duros que los de clientes: es la llave de todas las cuentas. Por IP; el
+// login además cuenta por correo (utils/intentosPorCuenta.js, con clave propia)
+// y el código de 2 pasos, por operador (controllers/admin/sesion.js).
+
+// Primer paso del login (correo y contraseña): 5 fallos cada 15 min por IP.
+export const limitadorAdminLogin = limitador('admin_login', {
+    windowMs: QUINCE_MINUTOS,
+    limit: 5,
+    skipSuccessfulRequests: true,
+    message: { error: 'Demasiados intentos. Esperá 15 minutos y volvé a probar.' },
+})
+
+// Segundo paso (el código de 6 cifras): 10 fallos cada 15 min por IP.
+export const limitadorAdminCodigo = limitador('admin_codigo', {
+    windowMs: QUINCE_MINUTOS,
+    limit: 10,
+    skipSuccessfulRequests: true,
+    message: { error: 'Demasiados códigos incorrectos. Esperá 15 minutos y volvé a probar.' },
+})
+
+// Links de activación de operadores (ver y activar): públicos, así que con
+// tope por IP: 20 por hora. Un token de 32 bytes no se adivina, pero así
+// tampoco se puede probar en masa.
+export const limitadorAdminActivacion = limitador('admin_activacion', {
+    windowMs: UNA_HORA,
+    limit: 20,
+    message: { error: 'Demasiados intentos. Esperá un rato y volvé a probar.' },
+})
+
+// Por OPERADOR, para todo pedido del panel con sesión (Case, B5): el equivalente
+// de limitadorUsuario. Va después de requireOperador (usa req.operadorId).
+export const limitadorOperador = limitador('operador', {
+    windowMs: QUINCE_MINUTOS,
+    limit: 600,
+    keyGenerator: (req) => `operador:${req.operadorId}`,
     message: { error: 'Demasiados pedidos. Esperá unos minutos y volvé a probar.' },
 })

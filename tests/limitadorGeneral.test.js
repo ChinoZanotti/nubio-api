@@ -20,7 +20,7 @@ const servidor = app.listen(0)
 const url = `http://localhost:${servidor.address().port}/datos`
 
 const token = (usuario) =>
-    jwt.sign({}, process.env.JWT_SECRET, { subject: String(usuario), algorithm: 'HS256', expiresIn: '8h' })
+    jwt.sign({ tv: 0 }, process.env.JWT_SECRET, { subject: String(usuario), audience: 'nubio-app', issuer: 'nubio-api', algorithm: 'HS256', expiresIn: '8h' })
 
 const pedir = async (tok) =>
     (await fetch(url, { headers: tok ? { Authorization: `Bearer ${tok}` } : {} })).status

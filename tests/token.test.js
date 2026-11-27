@@ -21,14 +21,14 @@ test('firmarToken no firma sin una versión válida', () => {
     }
 })
 
-test('un token sin "tv" (emitido antes de la columna) se lee como versión 0', () => {
-    const viejo = jwt.sign({}, process.env.JWT_SECRET, { subject: '42', expiresIn: '8h' })
-    assert.deepEqual(verificarToken(viejo), { userId: 42, tv: 0 })
+test('un token sin "tv" ya no sirve (desde la etapa 2 es obligatorio)', () => {
+    const viejo = jwt.sign({}, process.env.JWT_SECRET, { subject: '42', audience: 'nubio-app', issuer: 'nubio-api', expiresIn: '8h' })
+    assert.equal(verificarToken(viejo), null)
 })
 
 test('un "tv" que no es un entero >= 0 se rechaza', () => {
     for (const tv of [-1, 1.5, '1', null]) {
-        const raro = jwt.sign({ tv }, process.env.JWT_SECRET, { subject: '42', expiresIn: '8h' })
+        const raro = jwt.sign({ tv }, process.env.JWT_SECRET, { subject: '42', audience: 'nubio-app', issuer: 'nubio-api', expiresIn: '8h' })
         assert.equal(verificarToken(raro), null, String(tv))
     }
 })
@@ -124,9 +124,11 @@ test('el token de la app lleva aud e iss; uno de otra app no sirve', () => {
     // Mismo secreto, otra audiencia (como sería un token del panel firmado por error con la clave de la app)
     const ajeno = jwt.sign({ tv: 0 }, process.env.JWT_SECRET, { subject: '7', audience: 'nubio-admin', algorithm: 'HS256', expiresIn: '1h' })
     assert.equal(verificarToken(ajeno), null)
-    // Los tokens de antes del cambio (sin aud) siguen valiendo hasta vencer
-    const viejo = jwt.sign({ tv: 0 }, process.env.JWT_SECRET, { subject: '7', algorithm: 'HS256', expiresIn: '1h' })
-    assert.deepEqual(verificarToken(viejo), { userId: 7, tv: 0 })
+    // Sin aud o sin iss (los de antes de la etapa 1) ya no sirven: son obligatorios
+    const sinAud = jwt.sign({ tv: 0 }, process.env.JWT_SECRET, { subject: '7', issuer: 'nubio-api', algorithm: 'HS256', expiresIn: '1h' })
+    assert.equal(verificarToken(sinAud), null)
+    const sinIss = jwt.sign({ tv: 0 }, process.env.JWT_SECRET, { subject: '7', audience: 'nubio-app', algorithm: 'HS256', expiresIn: '1h' })
+    assert.equal(verificarToken(sinIss), null)
 })
 
 test('requireAuth corta con 401 si el usuario no tiene cuenta', async () => {

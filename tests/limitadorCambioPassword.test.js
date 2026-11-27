@@ -27,8 +27,10 @@ const url = `http://localhost:${servidor.address().port}/me/password`
 // Dos sesiones del MISMO usuario (7): tokens distintos (otro iat), como dos
 // inicios de sesión en momentos diferentes.
 const token = (hace) =>
-    jwt.sign({ iat: Math.floor(Date.now() / 1000) - hace }, process.env.JWT_SECRET, {
+    jwt.sign({ iat: Math.floor(Date.now() / 1000) - hace, tv: 0 }, process.env.JWT_SECRET, {
         subject: '7',
+        audience: 'nubio-app',
+        issuer: 'nubio-api',
         algorithm: 'HS256',
         expiresIn: '8h',
     })

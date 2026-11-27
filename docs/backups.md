@@ -64,7 +64,7 @@ cd C:\dev\nubio-api-produccion
 npm run backup
 ```
 
-Tiene que terminar con `Listo: ...nubio-aaaa-mm-dd_hhmmss.dump (x MB, 5 tablas con datos)`.
+Tiene que terminar con `Listo: ...nubio-aaaa-mm-dd_hhmmss.dump (x MB, n tablas con datos)`: hoy son 6 (`cuentas`, `users`, `login`, `marcas`, `alertas`, `boletin_marcas`).
 
 ## 3. Programarlo (Programador de tareas de Windows)
 

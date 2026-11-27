@@ -8,7 +8,10 @@ import { handleMe, handleUpdateMe, handleCambiarPassword } from './controllers/m
 import { crearRequireAuth } from './middleware/requireAuth.js'
 import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorUsuario, limitadorImportacion, limitadorBoletines, limitadorBoletinesSesion, limitadorCambioPassword, limitadorEscrituraMarcas } from './middleware/rateLimit.js'
 import { crearLimiteSimultaneo } from './middleware/simultaneos.js'
-import { corsNubio, helmetNubio } from './middleware/seguridad.js'
+import { corsPorRuta, helmetNubio, panelConfigurado, origenesSeSolapan } from './middleware/seguridad.js'
+import { configuracionTokenOperadorOk } from './utils/tokenOperador.js'
+import { configuracionCifradoOk } from './utils/cifrado.js'
+import { crearRutasAdmin } from './routes/admin.js'
 import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
 import { verificarConfiguracion } from './utils/token.js'
 import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk, handleUpdateMarca, handleDeleteMarca } from './controllers/marcas.js'
@@ -17,6 +20,20 @@ import { handleGetAlertas, handleResumenAlertas, handleUpdateAlerta } from './co
 
 // Sin JWT_SECRET no se pueden firmar ni verificar tokens: cortamos al arrancar.
 verificarConfiguracion()
+
+// Panel comercial (etapa 2): se enciende solo si están sus tres variables
+// (ADMIN_FRONTEND_URL, ADMIN_JWT_SECRET distinta de JWT_SECRET y
+// ADMIN_CIFRADO_KEY). Si falta alguna, las rutas /admin no existen (404): el
+// panel queda apagado, nunca a medias. Si está la URL pero falla un secreto,
+// no arranca: es un error de configuración que hay que ver.
+const conPanel = panelConfigurado()
+if (conPanel && !(configuracionTokenOperadorOk() && configuracionCifradoOk())) {
+    throw new Error('Panel comercial: ADMIN_FRONTEND_URL está definido, pero falta ADMIN_JWT_SECRET (distinta de JWT_SECRET) o ADMIN_CIFRADO_KEY.')
+}
+if (conPanel && origenesSeSolapan()) {
+    throw new Error('Panel comercial: ADMIN_FRONTEND_URL no puede ser la misma dirección que FRONTEND_URL (el panel va en otro sitio).')
+}
+console.log(`Panel comercial: ${conPanel ? 'encendido' : 'apagado (sin ADMIN_FRONTEND_URL)'}`)
 
 // Conexión a Postgres: config compartida con los scripts (ver db.js).
 const db = crearDb()
@@ -57,13 +74,17 @@ const app = express()
 // podría inventar una distinta en cada pedido y saltarse el límite.
 // Si Render cambia su infraestructura, volver a medir (ver CLAUDE.md).
 app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 3))
+// Rutas que distinguen mayúsculas: /ADMIN/... no es /admin/... (Case, M1 de la
+// etapa 2). Las de la app son todas en minúscula: no cambia nada para ellas.
+app.set('case sensitive routing', true)
 
 // Orden: helmet primero (headers de seguridad en TODAS las respuestas, incluso
 // errores y 429), después CORS (antes del limitador, para que el 429 lleve el
 // header CORS y el frontend pueda leer el mensaje), después el limitador.
-// corsNubio() lee FRONTEND_URL y corta el arranque si no está.
+// corsPorRuta lee FRONTEND_URL (y corta el arranque si no está) y, con el
+// panel encendido, ADMIN_FRONTEND_URL para las rutas /admin.
 app.use(helmetNubio())
-app.use(corsNubio())
+app.use(corsPorRuta({ conPanel }))
 
 // Chequeo de salud: lo llaman Render (Health Check Path) y el monitor externo.
 // Va ANTES del limitador: si cayera en un 429, Render creería que el servidor
@@ -125,6 +146,9 @@ app.get('/alertas', conSesion, (req, res) => handleGetAlertas(req, res, db))
 // Contador del menú del frontend: { nuevas, urgentes }, sin traer las alertas.
 app.get('/alertas/resumen', conSesion, (req, res) => handleResumenAlertas(req, res, db))
 app.patch('/alertas/:id', conSesion, (req, res) => handleUpdateAlerta(req, res, db))
+
+// --- Panel comercial (etapa 2): router aparte, ver routes/admin.js ---
+if (conPanel) app.use('/admin', crearRutasAdmin(db, bcrypt))
 
 // --- Al final, siempre: lo que no atendió ninguna ruta ---
 app.use(rutaNoEncontrada)

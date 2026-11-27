@@ -51,21 +51,18 @@ export function firmarToken(userId, tokenVersion) {
 // Devuelve { userId, tv } o null si el token es inválido, está vencido o fue
 // modificado (la firma no coincide). Que la versión siga vigente lo decide
 // requireAuth, que es el que consulta la base.
-// Sin "tv" se lee 0: son los tokens emitidos antes de la columna, que siguen
-// valiendo hasta que la persona cambie la contraseña (o venzan, 8 h).
+// aud, iss y tv son OBLIGATORIOS (panel comercial, etapa 2; condición de la
+// revisión de Case, I3). La etapa 1 los agregó aceptando por 8 h los tokens
+// viejos sin ellos; ya vencieron todos. Exigirlos es lo que garantiza que un
+// token firmado para otra cosa (el panel, si alguna vez compartiera la clave
+// por error) no sirva acá.
 export function verificarToken(token) {
     try {
-        const payload = jwt.verify(token, secreto(), { algorithms: [ALGORITMO] })
-        // Si trae aud o iss, tienen que ser los de la app de clientes. Los
-        // tokens emitidos antes de este cambio no los traen y siguen valiendo
-        // hasta vencer (8 h): no hacía falta cerrar todas las sesiones al
-        // deployar. Pasadas esas 8 h, exigirlos (deuda en CLAUDE.md, junto con
-        // la de "tv"). jwt.verify con { audience } rechazaría los viejos.
-        if ('aud' in payload && payload.aud !== AUDIENCIA) return null
-        if ('iss' in payload && payload.iss !== EMISOR) return null
+        const payload = jwt.verify(token, secreto(), { algorithms: [ALGORITMO], audience: AUDIENCIA, issuer: EMISOR })
         const userId = Number(payload.sub)
         // 'in' y no ??: un tv: null no es "falta", es un valor inválido.
-        const tv = 'tv' in payload ? payload.tv : 0
+        if (!('tv' in payload)) return null
+        const { tv } = payload
         if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(tv) || tv < 0) return null
         return { userId, tv }
     } catch {
