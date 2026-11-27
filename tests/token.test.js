@@ -57,23 +57,27 @@ test('un token vencido se rechaza', () => {
 
 // --- requireAuth, con una base falsa ---
 
-// users: id -> token_version, y id -> cuenta_id. `consultas` cuenta los SELECT (para el caché).
+// users: id -> token_version, id -> cuenta_id, y el estado de la cuenta.
+// `consultas` cuenta los SELECT (para el caché).
 let versiones
 let cuentas
+let estado
 let consultas
 beforeEach(() => {
     reiniciarVersiones()
     versiones = new Map([[7, 0]])
     cuentas = new Map([[7, 3]])
+    estado = 'activa'
     consultas = 0
 })
 const dbFalsa = () => ({
     select() { return this },
-    where({ id }) { this.id = id; return this },
+    join() { return this },
+    where(filtro) { this.id = filtro['users.id'] ?? filtro.id; return this },
     first() {
         consultas += 1
         return Promise.resolve(versiones.has(this.id)
-            ? { token_version: versiones.get(this.id), cuenta_id: cuentas.get(this.id) ?? null }
+            ? { token_version: versiones.get(this.id), cuenta_id: cuentas.get(this.id) ?? null, cuenta_estado: estado }
             : undefined)
     },
 })
@@ -96,6 +100,33 @@ test('requireAuth deja pasar con token válido y pone req.userId y la cuenta de 
     assert.equal(siguio, true)
     assert.equal(req.userId, 7)
     assert.equal(req.cuentaId, 3)
+})
+
+test('requireAuth corta con 401 y el código de suspendida si la cuenta está suspendida', async () => {
+    estado = 'suspendida'
+    const { res, siguio } = await correrMiddleware(`Bearer ${firmarToken(7, 0)}`)
+    assert.equal(siguio, false)
+    assert.equal(res.codigo, 401)
+    assert.equal(res.cuerpo.codigo, 'cuenta_suspendida')
+})
+
+test('requireAuth: un estado que no sea "activa" (o que falte) no pasa', async () => {
+    estado = undefined
+    const { siguio } = await correrMiddleware(`Bearer ${firmarToken(7, 0)}`)
+    assert.equal(siguio, false)
+})
+
+test('el token de la app lleva aud e iss; uno de otra app no sirve', () => {
+    const token = firmarToken(7, 0)
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())
+    assert.equal(payload.aud, 'nubio-app')
+    assert.equal(payload.iss, 'nubio-api')
+    // Mismo secreto, otra audiencia (como sería un token del panel firmado por error con la clave de la app)
+    const ajeno = jwt.sign({ tv: 0 }, process.env.JWT_SECRET, { subject: '7', audience: 'nubio-admin', algorithm: 'HS256', expiresIn: '1h' })
+    assert.equal(verificarToken(ajeno), null)
+    // Los tokens de antes del cambio (sin aud) siguen valiendo hasta vencer
+    const viejo = jwt.sign({ tv: 0 }, process.env.JWT_SECRET, { subject: '7', algorithm: 'HS256', expiresIn: '1h' })
+    assert.deepEqual(verificarToken(viejo), { userId: 7, tv: 0 })
 })
 
 test('requireAuth corta con 401 si el usuario no tiene cuenta', async () => {

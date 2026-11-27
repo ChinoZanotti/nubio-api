@@ -12,7 +12,7 @@ const { limitadorCambioPassword } = await import('../middleware/rateLimit.js')
 // hace handleCambiarPassword cuando la actual está mal.
 // Base falsa: el usuario 7 existe con token_version 0 (los tokens de abajo no
 // llevan "tv", que se lee como 0).
-const dbFalsa = () => ({ select() { return this }, where() { return this }, first: async () => ({ token_version: 0, cuenta_id: 1 }) })
+const dbFalsa = () => ({ select() { return this }, join() { return this }, where() { return this }, first: async () => ({ token_version: 0, cuenta_id: 1, cuenta_estado: 'activa' }) })
 const requireAuth = crearRequireAuth(dbFalsa)
 
 const app = express()

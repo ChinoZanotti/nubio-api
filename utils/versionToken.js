@@ -23,9 +23,10 @@ const TTL_MS = 30 * 1000
 // recuerda el orden de inserción). Sobra para los usuarios reales de Nubio.
 const MAX_ENTRADAS = 10_000
 
-// Guarda también la cuenta del usuario (users.cuenta_id, sql/012): requireAuth
-// la necesita en cada pedido, y así sale de la misma consulta y del mismo caché.
-const cache = new Map() // userId -> { tv, cuentaId, hasta (ms) }
+// Guarda también la cuenta del usuario (users.cuenta_id, sql/012) y si está
+// activa (cuentas.estado, sql/014): requireAuth las necesita en cada pedido, y
+// así salen de la misma consulta y del mismo caché.
+const cache = new Map() // userId -> { tv, cuentaId, activa, hasta (ms) }
 
 // Guarda la versión de un usuario. Mientras la entrada está vigente, NO la
 // baja. Importa por esta carrera: un pedido consulta la base y lee 0; mientras
@@ -35,32 +36,45 @@ const cache = new Map() // userId -> { tv, cuentaId, hasta (ms) }
 // en la base (un restore de Neon, un UPDATE a mano), la base manda. Si no, el
 // usuario quedaba afuera hasta reiniciar el servidor: signin firmaba con la
 // versión de la base y requireAuth comparaba con la del caché.
-// cuentaId: si no se pasa, se conserva la que ya estaba.
-export function recordar(userId, tv, cuentaId, ahora = Date.now()) {
+// cuenta = { cuentaId, activa }: lo que no se pase se conserva de la entrada
+// anterior (handleCambiarPassword solo sabe la versión nueva y la cuenta).
+export function recordar(userId, tv, cuenta = {}, ahora = Date.now()) {
     const previo = cache.get(userId)
     if (previo && previo.hasta > ahora && previo.tv > tv) return
     cache.delete(userId)
-    cache.set(userId, { tv, cuentaId: cuentaId ?? previo?.cuentaId, hasta: ahora + TTL_MS })
+    cache.set(userId, {
+        tv,
+        cuentaId: cuenta.cuentaId ?? previo?.cuentaId,
+        activa: cuenta.activa ?? previo?.activa,
+        hasta: ahora + TTL_MS,
+    })
     if (cache.size > MAX_ENTRADAS) cache.delete(cache.keys().next().value)
 }
 
-// Devuelve { tv, cuentaId } del usuario, o null si el usuario ya no existe.
-// `ahora` se puede pasar en los tests para no depender del reloj real.
+// Devuelve { tv, cuentaId, activa } del usuario, o null si el usuario ya no
+// existe. `ahora` se puede pasar en los tests para no depender del reloj real.
+// activa: true solo si cuentas.estado es 'activa'. Cualquier otra cosa
+// (suspendida, un valor que falte) cuenta como NO activa: si hay duda, no pasa.
 export async function sesionVigente(db, userId, ahora = Date.now()) {
     const enCache = cache.get(userId)
-    if (enCache && enCache.hasta > ahora && enCache.cuentaId != null) {
-        return { tv: enCache.tv, cuentaId: enCache.cuentaId }
+    if (enCache && enCache.hasta > ahora && enCache.cuentaId != null && enCache.activa !== undefined) {
+        return { tv: enCache.tv, cuentaId: enCache.cuentaId, activa: enCache.activa }
     }
 
-    const fila = await db('users').select('token_version', 'cuenta_id').where({ id: userId }).first()
+    const fila = await db('users')
+        .join('cuentas', 'cuentas.id', 'users.cuenta_id')
+        .select('users.token_version', 'users.cuenta_id', 'cuentas.estado as cuenta_estado')
+        .where({ 'users.id': userId })
+        .first()
     if (!fila) {
         cache.delete(userId)
         return null
     }
-    recordar(userId, fila.token_version, fila.cuenta_id, ahora)
+    const activa = fila.cuenta_estado === 'activa'
+    recordar(userId, fila.token_version, { cuentaId: fila.cuenta_id, activa }, ahora)
     // Lo que quedó en el caché, no lo leído: si mientras tanto alguien subió
-    // la versión, gana la nueva (ver recordar). La cuenta, la leída.
-    return { tv: cache.get(userId).tv, cuentaId: fila.cuenta_id }
+    // la versión, gana la nueva (ver recordar). La cuenta y su estado, los leídos.
+    return { tv: cache.get(userId).tv, cuentaId: fila.cuenta_id, activa }
 }
 
 // Solo la versión (la usan los tests de la revocación).

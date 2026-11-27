@@ -4,6 +4,8 @@ import { COSTO_BCRYPT } from './register.js'
 import { registrarError } from '../utils/log.js'
 import { esperaPendiente, registrarIntento, registrarExito, esIpConocida } from '../utils/intentosPorCuenta.js'
 import { registrarEvento } from '../utils/eventos.js'
+import { MENSAJE_CUENTA_SUSPENDIDA, CODIGO_CUENTA_SUSPENDIDA } from '../services/cuentas.js'
+import { recordar } from '../utils/versionToken.js'
 
 // Tope de largo de la contraseña en el login (en caracteres). Muy por encima
 // de cualquier contraseña real; solo evita procesar textos enormes.
@@ -57,9 +59,12 @@ export const handleSignin = async (req, res, db, bcrypt) => {
         // contraseña cambia después, el token nace revocado.
         // Columnas explícitas: con select('*') cualquier columna nueva de users
         // saldría sola hacia el cliente.
+        // Con el estado de la cuenta (sql/014), en la misma consulta.
         const fila = await db('login')
             .join('users', 'users.email', 'login.email')
-            .select('login.hash', 'users.id', 'users.name', 'users.email', 'users.joined', 'users.token_version')
+            .join('cuentas', 'cuentas.id', 'users.cuenta_id')
+            .select('login.hash', 'users.id', 'users.name', 'users.email', 'users.joined', 'users.token_version', 'users.cuenta_id',
+                'cuentas.estado as cuenta_estado')
             .where({ 'login.email': email })
             .first()
 
@@ -82,6 +87,16 @@ export const handleSignin = async (req, res, db, bcrypt) => {
             registrarEvento('login_fallido', { email, ip: req.ip, cuentaExiste: Boolean(fila) })
             return res.status(400).json(CREDENCIALES_INVALIDAS)
         }
+        // Cuenta suspendida: recién DESPUÉS de comprobar la contraseña. Si se
+        // dijera antes, cualquiera sabría qué correos tienen cuenta (y cuáles
+        // están suspendidos) sin saber la contraseña. Con la contraseña
+        // correcta sí se dice el motivo: con el genérico "incorrectos" la
+        // persona seguiría probando y gastaría los intentos. 403 y no 400: las
+        // credenciales están bien, lo que falta es el permiso.
+        if (fila.cuenta_estado !== 'activa') {
+            registrarEvento('login_cuenta_suspendida', { email, ip: req.ip })
+            return res.status(403).json({ error: MENSAJE_CUENTA_SUSPENDIDA, codigo: CODIGO_CUENTA_SUSPENDIDA })
+        }
         // ipNueva: entrar desde un lugar desde donde esta cuenta nunca entró es
         // lo primero que conviene mirar si se sospecha un robo de contraseña.
         registrarEvento('login_ok', { email, ip: req.ip, ipNueva: !esIpConocida(email, req.ip) })
@@ -103,9 +118,16 @@ export const handleSignin = async (req, res, db, bcrypt) => {
             }
         }
 
-        // El hash y token_version no van al cliente: se separan de `user`.
+        // El hash, token_version y el estado de la cuenta no van al cliente: se
+        // separan de `user`.
         // eslint-disable-next-line no-unused-vars
-        const { hash, token_version: tokenVersion, ...user } = fila
+        const { hash, token_version: tokenVersion, cuenta_estado: _estado, cuenta_id: cuentaId, ...user } = fila
+
+        // El caché de sesiones, al día con lo que se acaba de leer: si la
+        // cuenta se reactivó desde otro proceso (un script, otra instancia), el
+        // caché podía seguir diciendo "suspendida" hasta 30 s y sacar a la
+        // persona en su primer pedido. recordar no baja la versión.
+        recordar(user.id, tokenVersion, { cuentaId, activa: true })
 
         // El token es la "credencial" que el frontend manda en cada pedido.
         // Lo firma el servidor con JWT_SECRET: el cliente no lo puede fabricar

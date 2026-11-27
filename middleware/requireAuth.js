@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { verificarToken } from '../utils/token.js'
 import { sesionVigente } from '../utils/versionToken.js'
+import { MENSAJE_CUENTA_SUSPENDIDA, CODIGO_CUENTA_SUSPENDIDA } from '../services/cuentas.js'
 
 // Middleware: corre ANTES del controlador. Si el pedido trae un token válido
 // en el header "Authorization: Bearer <token>", deja el id del usuario en
@@ -34,6 +35,14 @@ export function crearRequireAuth(db) {
         // y manda al login.
         if (vigente === null || vigente.tv !== datos.tv || !Number.isInteger(vigente.cuentaId)) {
             return res.status(401).json({ error: 'Tu sesión se cerró. Volvé a iniciar sesión.' })
+        }
+        // Cuenta suspendida (sql/014). Normalmente no se llega acá: suspender
+        // sube token_version y el token ya no coincide arriba. Es la segunda
+        // red, por si alguna vez la versión no se subió. 401 con código propio:
+        // el frontend cierra la sesión como siempre, y el login muestra el
+        // motivo cuando la persona intenta entrar.
+        if (vigente.activa !== true) {
+            return res.status(401).json({ error: MENSAJE_CUENTA_SUSPENDIDA, codigo: CODIGO_CUENTA_SUSPENDIDA })
         }
 
         req.userId = datos.userId

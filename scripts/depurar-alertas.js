@@ -15,9 +15,10 @@
 // Medidas para no borrar de más en producción (revisión de Case, M2):
 // - --aplicar exige el número: si el recálculo da otro (el motor cambió, otra
 //   persona tocó alertas), no hace nada.
-// - Contra una base que no es local, exige el repo sin cambios sin commitear:
-//   el motor que decide es el de esta PC, y tiene que ser el que está
-//   deployado. Imprime el commit.
+// - Contra una base que no es local, exige el código deployado: main publicado
+//   y sin cambios (utils/repoDeployado.js). El motor que decide es el de esta
+//   PC: correrlo desde c:\dev\nubio-api-produccion. Imprime el commit.
+ubio-api-produccion. Imprime el commit.
 // - Antes de borrar, guarda las filas borradas en ~/.nubio/depuraciones/
 //   (fuera del repo; sin nombres de clientes, solo ids y puntajes), para poder
 //   restaurarlas con un INSERT.
@@ -31,13 +32,13 @@
 // terminar `Remove-Item Env:DATABASE_URL` en PowerShell, para no dejar la
 // terminal apuntando a producción. Mejor con el estudio sin usar la app.
 import 'dotenv/config'
-import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { crearDb } from '../db.js'
 import { prepararMarca } from '../utils/similitud/index.js'
 import { evaluarPar, sinTocar } from '../services/alertas.js'
+import { revisarRepo } from '../utils/repoDeployado.js'
 
 const TANDA = 1000
 const argAplicar = process.argv.find((a) => a.startsWith('--aplicar'))
@@ -51,17 +52,16 @@ if (process.argv.includes('--borrar')) {
     process.exit(1)
 }
 
-const git = (...args) => spawnSync('git', args, { encoding: 'utf8' }).stdout?.trim() ?? ''
-
 async function main() {
     const host = new URL(process.env.DATABASE_URL).hostname
-    const esLocal = ['localhost', '127.0.0.1', '[::1]'].includes(host)
-    const commit = git('rev-parse', '--short', 'HEAD') || 'desconocido'
-    const sucio = git('status', '--porcelain') !== ''
+    // Contra producción, el motor tiene que ser el deployado: main publicado y
+    // sin cambios (utils/repoDeployado.js; revisión de Case de la etapa 1, M2).
+    const repo = revisarRepo(host)
+    const { commit } = repo
     console.log(`Base: ${host}${argAplicar ? '' : ' (solo contar, sin cambiar nada)'}`)
-    console.log(`Motor del commit ${commit}${sucio ? ' CON CAMBIOS SIN COMMITEAR' : ''}`)
-    if (argAplicar && !esLocal && sucio) {
-        console.error('Contra una base que no es local, el repo tiene que estar sin cambios: commiteá o descartá antes.')
+    console.log(`Motor: ${repo.resumen}`)
+    if (argAplicar && repo.problema) {
+        console.error(`Contra una base que no es local hace falta el código deployado: ${repo.problema}.`)
         process.exit(1)
     }
 

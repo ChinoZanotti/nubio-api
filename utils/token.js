@@ -9,6 +9,13 @@ const DURACION = '8h'
 // atacante elija. HS256 = HMAC con SHA-256 y un secreto compartido.
 const ALGORITMO = 'HS256'
 
+// Para qué app es el token (claim "aud") y quién lo emitió ("iss"). Panel
+// comercial, etapa 1 (revisión de Case, C1): el panel va a tener sus propias
+// sesiones, con OTRA clave y otro "aud". Con esto, un token de una app no
+// sirve en la otra aunque alguna vez compartieran la clave por error.
+const AUDIENCIA = 'nubio-app'
+const EMISOR = 'nubio-api'
+
 function secreto() {
     const valor = process.env.JWT_SECRET
     if (!valor || valor.length < 32) {
@@ -34,6 +41,8 @@ export function firmarToken(userId, tokenVersion) {
     }
     return jwt.sign({ tv: tokenVersion }, secreto(), {
         subject: String(userId),
+        audience: AUDIENCIA,
+        issuer: EMISOR,
         algorithm: ALGORITMO,
         expiresIn: DURACION,
     })
@@ -47,6 +56,13 @@ export function firmarToken(userId, tokenVersion) {
 export function verificarToken(token) {
     try {
         const payload = jwt.verify(token, secreto(), { algorithms: [ALGORITMO] })
+        // Si trae aud o iss, tienen que ser los de la app de clientes. Los
+        // tokens emitidos antes de este cambio no los traen y siguen valiendo
+        // hasta vencer (8 h): no hacía falta cerrar todas las sesiones al
+        // deployar. Pasadas esas 8 h, exigirlos (deuda en CLAUDE.md, junto con
+        // la de "tv"). jwt.verify con { audience } rechazaría los viejos.
+        if ('aud' in payload && payload.aud !== AUDIENCIA) return null
+        if ('iss' in payload && payload.iss !== EMISOR) return null
         const userId = Number(payload.sub)
         // 'in' y no ??: un tv: null no es "falta", es un valor inválido.
         const tv = 'tv' in payload ? payload.tv : 0

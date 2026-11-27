@@ -148,7 +148,7 @@ export const handleCambiarPassword = async (req, res, db, bcrypt) => {
 
         // Al caché enseguida: desde este momento, en este servidor, los tokens
         // viejos de esta cuenta dan 401 (ver utils/versionToken.js).
-        recordar(req.userId, tokenVersion, req.cuentaId)
+        recordar(req.userId, tokenVersion, { cuentaId: req.cuentaId })
         registrarEvento('password_cambiada', { email: user.email, ip: req.ip, usuario: req.userId, cuenta_id: req.cuentaId })
         // Token nuevo para la sesión que hizo el cambio: es la única que sigue.
         res.json({ ok: true, token: firmarToken(req.userId, tokenVersion) })

@@ -10,7 +10,7 @@ const { limitadorGeneral, limitadorUsuario } = await import('../middleware/rateL
 // Express de verdad, armado como server.js: limitador general por IP para todo
 // y, en las rutas con datos, requireAuth + limitador por usuario.
 // Base falsa: cualquier usuario existe con token_version 0.
-const dbFalsa = () => ({ select() { return this }, where() { return this }, first: async () => ({ token_version: 0, cuenta_id: 1 }) })
+const dbFalsa = () => ({ select() { return this }, join() { return this }, where() { return this }, first: async () => ({ token_version: 0, cuenta_id: 1, cuenta_estado: 'activa' }) })
 const conSesion = [crearRequireAuth(dbFalsa), limitadorUsuario]
 
 const app = express()

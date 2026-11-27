@@ -15,7 +15,9 @@
     "recalcular-alertas": "node scripts/recalcular-alertas.js",
     "depurar-alertas": "node scripts/depurar-alertas.js",
     "probar-conexion": "node scripts/probar-conexion.js",
-    "backup": "node scripts/backup.js"
+    "backup": "node scripts/backup.js",
+    "suspender-cuenta": "node scripts/estado-cuenta.js suspender",
+    "reactivar-cuenta": "node scripts/estado-cuenta.js reactivar"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

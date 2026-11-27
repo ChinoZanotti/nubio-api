@@ -161,10 +161,21 @@ async function insertarTanda(db, filas) {
     }
 }
 
-// Un boletín nuevo se compara contra las marcas de TODOS los usuarios.
+// Las marcas que el motor compara: solo las de cuentas ACTIVAS (sql/014). Una
+// cuenta suspendida no recibe alertas; al reactivarla se generan las que se
+// perdió, contra lo que sigue en plazo (services/cuentas.js).
+// Columnas con la tabla adelante: el JOIN con cuentas trae otro `id`.
+function marcasDeCuentasActivas(db) {
+    return db('marcas')
+        .join('cuentas', 'cuentas.id', 'marcas.cuenta_id')
+        .where('cuentas.estado', 'activa')
+        .select(COLUMNAS_MARCA.map((c) => `marcas.${c}`))
+}
+
+// Un boletín nuevo se compara contra las marcas de todas las cuentas activas.
 export async function generarAlertasParaBoletin(db, fechaPublicacion) {
     const publicadas = await db('boletin_marcas').select(COLUMNAS_BOLETIN).where({ fecha_publicacion: fechaPublicacion })
-    const marcas = await db('marcas').select(COLUMNAS_MARCA)
+    const marcas = await marcasDeCuentasActivas(db)
     return insertar(db, await generarPares(marcas, publicadas))
 }
 
@@ -219,13 +230,17 @@ async function publicadasEnPlazo(db) {
 // De paso, la pantalla de Alertas nunca ve un instante sin alertas.
 export async function generarAlertasParaMarcas(db, marcaIds, { regenerar = false } = {}) {
     if (marcaIds.length === 0) return 0
-    const marcas = await db('marcas').select(COLUMNAS_MARCA).whereIn('id', marcaIds)
+    // Solo las de cuentas activas: si la cuenta se suspendió mientras el
+    // trabajo esperaba en la fila, no se le generan alertas (ni se le borran:
+    // el DELETE de abajo usa estas marcas, no las pedidas).
+    const marcas = await marcasDeCuentasActivas(db).whereIn('marcas.id', marcaIds)
+    if (marcas.length === 0) return 0
     const { publicadas, preparadas } = await publicadasEnPlazo(db)
     const filas = await generarPares(marcas, publicadas, preparadas)
     if (!regenerar) return insertar(db, filas)
 
     return db.transaction(async (trx) => {
-        await sinTocar(trx('alertas').whereIn('marca_id', marcaIds)).del()
+        await sinTocar(trx('alertas').whereIn('marca_id', marcas.map((m) => m.id))).del()
         return insertar(trx, filas)
     })
 }

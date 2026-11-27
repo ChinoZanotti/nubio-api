@@ -94,7 +94,9 @@ function dbFalsa(tablas) {
         first() {
             if (!this.fila || !this.unir) return Promise.resolve(this.fila && { ...this.fila })
             const user = tablas.users.find((u) => u.email === this.fila.email)
-            return Promise.resolve(user && { ...user, hash: this.fila.hash })
+            // join('cuentas', ...): el estado de la cuenta del usuario (sql/014)
+            const cuenta = (tablas.cuentas ?? []).find((c) => c.id === user?.cuenta_id)
+            return Promise.resolve(user && { ...user, hash: this.fila.hash, cuenta_estado: cuenta?.estado })
         },
         update(cambios) {
             if (!this.fila) return Promise.resolve(0)
@@ -106,9 +108,30 @@ function dbFalsa(tablas) {
 function tablasNuevas() {
     return {
         login: [{ email: 'ana@estudio.com', hash }],
-        users: [{ id: 7, name: 'Ana', email: 'ana@estudio.com', joined: '2026-01-01', token_version: 3 }],
+        users: [{ id: 7, name: 'Ana', email: 'ana@estudio.com', joined: '2026-01-01', token_version: 3, cuenta_id: 1 }],
+        cuentas: [{ id: 1, estado: 'activa' }],
     }
 }
+
+test('signin de una cuenta suspendida: 403 con el motivo, solo con la contraseña correcta', async () => {
+    const tablas = tablasNuevas()
+    tablas.cuentas[0].estado = 'suspendida'
+    const res = await signin({ email: 'ana@estudio.com', password: 'una-clave-larga' }, tablas)
+    assert.equal(res.codigo, 403)
+    assert.equal(res.cuerpo.codigo, 'cuenta_suspendida')
+    assert.equal(res.cuerpo.token, undefined)
+    // Con la contraseña incorrecta, el mismo mensaje genérico de siempre: no
+    // revela que la cuenta existe ni que está suspendida.
+    const mal = await signin({ email: 'ana@estudio.com', password: 'otra-clave-cualquiera' }, tablas)
+    assert.equal(mal.codigo, 400)
+    assert.equal(mal.cuerpo.codigo, undefined)
+})
+
+test('signin no le manda al cliente el estado de la cuenta', async () => {
+    const res = await signin({ email: 'ana@estudio.com', password: 'una-clave-larga' })
+    assert.equal(res.codigo, 200)
+    assert.equal('cuenta_estado' in res.cuerpo.user, false)
+})
 async function signin(body, tablas = tablasNuevas(), bcryptUsado = bcrypt) {
     const res = { status(c) { this.codigo = c; return this }, json(b) { this.cuerpo = b; return this } }
     res.codigo = 200
