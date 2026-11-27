@@ -1,9 +1,41 @@
 # Nubio API — Backend
 
 ## Qué es este proyecto
-Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend vive en un repositorio separado llamado `nubio`, desplegado en Render como Static Site. Este backend se despliega en Render como Web Service, en `https://nubio-api-ohio.onrender.com` (plan Starter, siempre encendido, con Health Check Path `/` y monitor en UptimeRobot).
+Backend (Node + Express) de Nubio, un producto comercial (SaaS) de vigilancia de marcas para agentes de propiedad intelectual de Paraguay. Objetivo: unos 300 usuarios; plan básico para agentes independientes y, más adelante, plan para agencias con varios usuarios y roles. Quiénes participan, cómo se trabaja (prioridades, cuándo está terminado un cambio, cómo explicar) y la lista de tareas (`docs/tareas.md`) están en el repo del frontend: leer su `CLAUDE.md`. El frontend vive en un repositorio separado llamado `nubio`, desplegado en Render como Static Site. Este backend se despliega en Render como Web Service, en `https://nubio-api-ohio.onrender.com` (plan Starter, siempre encendido, con Health Check Path `/` y monitor en UptimeRobot).
 - Región **Ohio**, la misma que Neon (AWS us-east-2). Hasta noviembre de 2026 estaba en Oregon (`nubio-api.onrender.com`) y cada consulta a la base cruzaba el país ida y vuelta. Render no cambia la región de un servicio: se creó uno nuevo con las mismas variables (el mismo `JWT_SECRET`, para no cerrar las sesiones abiertas). Si se vuelve a crear, ver "Región de la API" en el `CLAUDE.md` del frontend.
 - El frontend está en `https://nubio-kruo.onrender.com` (es el valor de `FRONTEND_URL`).
+
+## Datos y privacidad
+Nubio guarda datos de clientes de estudios jurídicos. Una filtración sería el peor incidente posible para el producto.
+
+**Qué datos hay:**
+- `users` y `login`: nombre, correo y hash de la contraseña (bcrypt).
+- `marcas`: la cartera de cada cuenta. Denominaciones, titulares (personas o empresas, clientes del estudio), estado y registro.
+- `alertas`: estado y notas. Son decisiones legales del estudio.
+- `boletin_marcas`: datos públicos de DINAPI. No son de nadie.
+
+**Dónde viven:**
+- La API, en Render (Ohio, EE. UU.).
+- La base, en Neon (AWS us-east-2, EE. UU.).
+- Los backups, en la PC del desarrollador: `.dump` sin cifrar (ver `docs/backups.md`).
+- Los logs, en Render: sin datos personales, ver abajo.
+- El token de sesión, en el `localStorage` del navegador.
+
+**Reglas fijas:**
+- **Aislamiento entre cuentas:** toda consulta sobre datos propios filtra por la cuenta del TOKEN (`req.userId`), nunca por un id que mande el cliente. Un recurso de otra cuenta responde 404, igual que uno que no existe. Al agregar una tabla o una ruta, esto es lo primero que se revisa.
+- **Logs sin datos personales:** `registrarError` (sin `detail` de Postgres) y `registrarEvento` (el correo como HMAC, nunca contraseñas ni tokens). Ver "Convenciones importantes".
+- **Ningún servicio externo nuevo sin evaluar** qué datos recibe y dónde los procesa. Hoy el único es Have I Been Pwned, que recibe solo los primeros 5 caracteres del SHA-1 de la contraseña (k-anonimato), nunca la contraseña.
+- **Nada sensible en las URLs:** los logs de acceso de Render y Cloudflare las guardan. Por eso la búsqueda de Boletines va por POST.
+- **Mínimo privilegio:** el backup usa un usuario de solo lectura. Pendiente: un rol propio para la API (ver Deuda conocida).
+- **Secretos:** solo en las variables de Render y en `~/.nubio/` de la PC del desarrollador. Nunca en el repo ni en una línea de comandos.
+
+## Capacidad y límites conocidos
+Lo que hoy funciona para la etapa de prueba y tiene que revisarse antes de llegar a unos 300 usuarios (tareas en `docs/tareas.md` del frontend, sección "Para la versión comercial"):
+- **Una sola instancia de Render.** Varias cosas viven en la memoria del proceso: los limitadores de pedidos, la fila de alertas, el caché de publicaciones, el tope de búsquedas simultáneas y los intentos de login por cuenta. Con dos instancias, cada una tendría su propia copia: los límites se duplicarían y la fila no sería única. Antes de escalar horizontalmente, moverlas a la base o a un almacén compartido (Redis).
+- **El motor:** unos 155 ms por marca contra las ~9.000 publicaciones en plazo, con la fila de a un trabajo, cediendo el turno para no congelar la API. Un boletín nuevo se compara contra las marcas de TODAS las cuentas, y eso corre en el proceso del importador, no en el servidor: el tiempo crece con la cantidad total de marcas.
+- **La base:** un pool de 10 conexiones, con `acquireConnectionTimeout` de 10 s. Neon está en el plan gratis: 0,5 GB, se suspende tras 5 minutos sin uso (la primera consulta después tarda más) y solo permite volver atrás unas horas.
+- **La importación de boletines** se corre a mano desde la PC del desarrollador, todos los días.
+- **Topes por cuenta:** 5.000 marcas, 1.000 por importación, 10 importaciones por hora y 200 escrituras pesadas cada 15 minutos.
 
 ## Stack
 - Node.js + Express (ESM — `"type": "module"` en package.json)
@@ -246,7 +278,7 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
   - Nunca contraseñas ni tokens. La IP va tal cual: es lo que permite ver de dónde viene un ataque.
   - Durante `npm test` no se escribe (Node define `NODE_TEST_CONTEXT`); los tests del registro pasan su propia función `escribir`. Tests en `tests/eventos.test.js`.
   - Medido: con un ataque distribuido de 13 intentos desde 13 IPs y 25 pedidos desde una IP frenada, quedaron 28 líneas y ningún email en claro.
-- Códigos de error de Postgres que se manejan: 23505 (unique) → 409, 23503 (foreign key) → 400.
+- Códigos de error de Postgres que se manejan: 23505 (unique) → 409, 23503 (foreign key) → 400, 23514 (check) → 400.
 - Headers de seguridad y CORS en `middleware/seguridad.js`. Orden en `server.js`: helmet → CORS → limitador general → `express.json`.
   - Helmet con la CSP más estricta (`default-src 'none'; frame-ancestors 'none'`), porque la API nunca sirve HTML. Además `X-Frame-Options: DENY`, HSTS y `nosniff`, y saca `X-Powered-By`.
   - CORS solo para los orígenes de `FRONTEND_URL`, con métodos GET/POST/PATCH/DELETE (DELETE desde noviembre 2026, para borrar marcas), headers `Content-Type` y `Authorization`, sin credentials (el token va en un header, no en cookie) y preflight cacheado 10 min. Si se agrega un método (ej. PUT) o un header, sumarlo acá o el navegador lo va a bloquear.
@@ -260,40 +292,39 @@ Backend (Node + Express) de Nubio, una app de vigilancia de marcas. El frontend 
 - Dependencias: correr `npm audit` en los dos repos antes de cada deploy. `npm audit fix` sin `--force` solo sube versiones compatibles. En noviembre de 2026 quedó en 0 vulnerabilidades. El `xlsx` del frontend viene del CDN de SheetJS y `npm audit` no lo ve: seguir sus releases a mano.
 - Mensajes de commit: cortos, una línea, minúscula, sin punto final, en español.
 
-## Pendiente (backlog activo)
-- Roles y permisos: admin vs usuario regular.
-- Revisión de Case de editar/borrar marcas (noviembre 2026): resueltos M1, M2, M3, B1, B2, B3, I1, I3. Quedan:
-  - B4: una alerta ya revisada sobrevive a un cambio total de la marca, y la pantalla la muestra con la denominación NUEVA ("ZETA ‖ AKME, coincide por fonética"), que es falso. Guardar en la alerta los datos de mi marca con que se calculó (`mi_denominacion_calc`, `mi_clase_calc`) o marcarlas `desactualizada` al regenerar.
-  - B5: el importador de boletines (otro proceso) lee todas las marcas al empezar y escribe minutos después: si se edita una marca en el medio, puede volver a meter alertas con los datos viejos. Caso raro; se arregla con `marcas.updated_at` y filtrando en el insert del importador.
-  - I2: `parseId` acepta formas como "1e3" o " 12 " (terminan en un entero válido; no es explotable).
-  - I4: al regenerar se borran las alertas `nueva` de publicaciones ya vencidas y no vuelven (el motor solo compara lo que sigue en plazo). Decisión consciente: no son accionables.
-  - Papelera (borrado lógico) para marcas: hoy borrar no se puede deshacer y se lleva las notas de las alertas.
-- Seguridad, tercera revisión de Case (noviembre 2026): resuelta completa (A1, M1 a M4, B1 a B6, el `maxLength` del filtro, la búsqueda de Boletines por POST y el registro de eventos de seguridad).
-- Seguridad, segunda revisión de Case: resuelta completa (I3, la revocación de sesiones, se cerró en noviembre de 2026 con `token_version`).
-- "Cerrar sesión en todos lados" en Mi cuenta: subir `token_version` sin cambiar la contraseña. El mecanismo ya existe; falta la ruta y el botón. Decidir si pide la contraseña actual (sin ella, un token robado podría sacar a la víctima de todas sus sesiones).
-- Sacar la compatibilidad con tokens sin `tv` en `verificarToken` (hoy se leen como 0) a partir de las 8 h del deploy de `token_version` (19100e0): para entonces ya vencieron todos. Exigir el claim: `if (!('tv' in payload)) return null`.
-- Contraseñas, lo que falta de la política recomendada por Case (noviembre 2026), para cuando se hagan el cambio de contraseña, los roles y la invitación de usuarios:
-  - Cambio obligatorio para quien tenga una contraseña que no cumpla la política: en `/signin`, después de validar, marcar `debe_cambiar_password` (columna nueva) y dejar ir solo a la pantalla de cambio. No bloquear a nadie de golpe.
-  - Cuentas creadas por admin con link de invitación (token de un solo uso, guardado como hash, vence en 24-72 h): el admin nunca elige la contraseña de otro.
-  - Normalizar con `password.normalize('NFKC')` antes de hashear y comparar (en signin, probar normalizada y si falla la cruda, y re-hashear).
-  - Migrar a argon2id (OWASP: m=19 MiB, t=2, p=1) con re-hash en el login por prefijo del hash (`$2b$` = bcrypt). Con argon2, tope de bytes también en `/signin`.
-  - 2FA con TOTP: obligatorio para admin, recomendado para todos. Códigos de recuperación hasheados, secreto cifrado, rate limit en el paso del código.
-  - Frontend: botón para mostrar u ocultar la contraseña.
-- Seguridad, lo que queda de la primera revisión de Case (noviembre 2026):
-  - Rol de Postgres de mínimo privilegio para la app en Neon (solo SELECT/INSERT/UPDATE/DELETE sobre sus tablas). El owner se usa solo para correr los `sql/00X_*.sql`.
-  - Historial de cambios de alertas (`alertas_historial`: quién, de qué estado a cuál, cuándo), en la misma transacción del PATCH. Importa porque las alertas sostienen decisiones legales con plazo.
-  - Con los roles: `/register` solo para admin (hoy cualquiera puede crear una cuenta).
-  - Si hay dominio propio: pasar el token a cookie HttpOnly (hoy va en localStorage porque frontend y API están en subdominios distintos de onrender.com y Safari bloquea esas cookies).
-- Mantener sincronizadas las copias de validación (`utils/marcaValidation.js`, `utils/paises.js`, `utils/authValidation.js`) con el frontend.
-- Correr `sql/003_alertas.sql` en Neon antes de deployar el backend con alertas.
-- Validar con el abogado (el motor todavía no se probó con un especialista):
-  - lista de clases relacionadas (`clasesRelacionadas.js`) y si la clase 35 se relaciona con todos los productos;
-  - términos genéricos y descriptivos por rubro (`terminosGenericos.js`), ej: CAFE en clase 30;
-  - umbrales (70 / 85) y ajustes por clase;
-  - si las renovaciones deben quedar excluidas;
-  - cómputo del plazo: fecha del boletín vs. última publicación en el diario;
-  - criterios de las Directrices de Examen de Marcas DINAPI (Res. 259/2025), sección derechos de terceros.
-- Cargar los feriados trasladables del año en `utils/feriados.js`. 2026: Boquerón trasladado al 28/09, deducido de los boletines (falta confirmar con el decreto); 1/3 y 12/6 sin revisar.
+## Deuda conocida (detalle técnico)
+La lista de tareas, con prioridades, está en `docs/tareas.md` del frontend. Acá queda solo el detalle técnico que hace falta para resolver cada punto.
 
-## Cómo ayudar en este proyecto
-El dueño de este proyecto está aprendiendo Express, Postgres, Git y deployment en profundidad mientras lo construye. Preferencia explícita: explicar el porqué de cada cambio, no solo tirar código.
+**Revisión de Case de editar/borrar marcas** (noviembre 2026; resueltos M1, M2, M3, B1, B2, B3, I1 e I3). Quedan:
+- B4: una alerta ya revisada sobrevive a un cambio total de la marca, y la pantalla la muestra con la denominación NUEVA ("ZETA ‖ AKME, coincide por fonética"), que es falso. Guardar en la alerta los datos de mi marca con que se calculó (`mi_denominacion_calc`, `mi_clase_calc`) o marcarlas `desactualizada` al regenerar.
+- B5: el importador de boletines (otro proceso) lee todas las marcas al empezar y escribe minutos después: si se edita una marca en el medio, puede volver a meter alertas con los datos viejos. Caso raro; se arregla con `marcas.updated_at` y filtrando en el insert del importador.
+- I2: `parseId` acepta formas como "1e3" o " 12 " (terminan en un entero válido; no es explotable).
+- I4: al regenerar se borran las alertas `nueva` de publicaciones ya vencidas y no vuelven (el motor solo compara lo que sigue en plazo). Decisión consciente: no son accionables.
+
+**Sesiones:**
+- "Cerrar sesión en todos lados" en Mi cuenta: subir `token_version` sin cambiar la contraseña. El mecanismo ya existe; falta la ruta y el botón. Decidir si pide la contraseña actual (sin ella, un token robado podría sacar a la víctima de todas sus sesiones).
+- Sacar la compatibilidad con tokens sin `tv` en `verificarToken` (hoy se leen como 0): ya vencieron todos los anteriores a `token_version` (19100e0). Exigir el claim: `if (!('tv' in payload)) return null`.
+- Con dominio propio: pasar el token a cookie HttpOnly (hoy va en localStorage porque frontend y API están en subdominios distintos de onrender.com y Safari bloquea esas cookies).
+
+**Contraseñas** (lo que falta de la política recomendada por Case, noviembre 2026):
+- Cambio obligatorio para quien tenga una contraseña que no cumpla la política: en `/signin`, después de validar, marcar `debe_cambiar_password` (columna nueva) y dejar ir solo a la pantalla de cambio. No bloquear a nadie de golpe.
+- Cuentas creadas por admin con link de invitación (token de un solo uso, guardado como hash, vence en 24-72 h): el admin nunca elige la contraseña de otro.
+- Normalizar con `password.normalize('NFKC')` antes de hashear y comparar (en signin, probar normalizada y si falla la cruda, y re-hashear).
+- Migrar a argon2id (OWASP: m=19 MiB, t=2, p=1) con re-hash en el login por prefijo del hash (`$2b$` = bcrypt). Con argon2, tope de bytes también en `/signin`.
+- 2FA con TOTP: obligatorio para admin, recomendado para todos. Códigos de recuperación hasheados, secreto cifrado, rate limit en el paso del código.
+
+**Seguridad, de la primera revisión de Case:**
+- Rol de Postgres de mínimo privilegio para la API en Neon (solo SELECT/INSERT/UPDATE/DELETE sobre sus tablas). El owner se usa solo para correr los `sql/0XX_*.sql`.
+- Historial de cambios de alertas (`alertas_historial`: quién, de qué estado a cuál, cuándo), en la misma transacción del PATCH. Importa porque las alertas sostienen decisiones legales con plazo.
+
+**Reglas del motor validadas con la abogada** (documento "Cómo compara Nubio las marcas", noviembre 2026):
+- Renovaciones publicadas: se excluyen (no se les presenta oposición). Confirmado; las marcas propias en renovación sí se vigilan.
+- Mismo titular: no aplica, no tiene que haber alerta. **A implementar**: comparar el titular normalizado.
+- Palabras descriptivas: si coinciden junto con algo distintivo (NUBIO contra NUBIO CAFE), la alerta sigue. Si son lo ÚNICO en común (CAFE NUBIO contra CAFE TORRES), no hay alerta. **A implementar**: lista por clase aprobada por la abogada (la frecuencia sola confunde descriptivas con marcas de un solo solicitante).
+- Sin respuesta: clases relacionadas (`clasesRelacionadas.js`, y si la clase 35 se relaciona con todos los productos) y umbrales (70 / 85), a revisar tras unas semanas de uso.
+- Plazo: sigue estimado desde la fecha del boletín. La pregunta de si se puede conseguir la fecha de la última publicación en el diario se sacó del documento: falta confirmar si es porque no se puede.
+- A contrastar: Directrices de Examen de Marcas DINAPI (Res. 259/2025), sección derechos de terceros.
+
+**Otros:**
+- Mantener sincronizadas las copias de validación (`utils/marcaValidation.js`, `utils/paises.js`, `utils/authValidation.js`) con el frontend.
+- Cargar los feriados trasladables del año en `utils/feriados.js`. 2026: Boquerón trasladado al 28/09, deducido de los boletines (falta confirmar con el decreto); 1/3 y 12/6 sin revisar.
