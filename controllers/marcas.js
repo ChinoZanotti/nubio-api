@@ -158,8 +158,10 @@ export const handleCreateMarca = async (req, res, db) => {
 
 // Los datos que usa el motor de similitud. Si la edición cambia alguno, las
 // alertas de la marca se calcularon con datos viejos y hay que regenerarlas.
-// Titular, país y fecha no influyen en el puntaje.
-const CAMPOS_DEL_MOTOR = ['denominacion', 'clase_niza', 'signo', 'expediente']
+// Titular y país también: deciden si el par es del mismo titular, y entonces
+// no hay alerta (revisión de Case del motor, M3). La fecha no influye.
+// La misma lista está en MisMarcas.jsx (frontend): si cambia, en los dos.
+const CAMPOS_DEL_MOTOR = ['denominacion', 'clase_niza', 'signo', 'expediente', 'titular', 'pais']
 const cambioParaElMotor = (antes, despues) =>
     CAMPOS_DEL_MOTOR.some((c) => String(antes[c] ?? '') !== String(despues[c] ?? ''))
 

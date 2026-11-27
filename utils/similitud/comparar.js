@@ -1,4 +1,4 @@
-import { tokens, quitarGenericos } from './normalizar.js'
+import { tokens, quitarGenericos, normalizarTitular } from './normalizar.js'
 import { claveEspanol, claveGuarani } from './fonetica.js'
 import { simRatio } from './metricas.js'
 import { relacionClase } from './clasesRelacionadas.js'
@@ -24,11 +24,18 @@ const PISO_PALABRA = 0.75
 // así que con 1000 marcas propias cada marca del boletín se volvía a procesar
 // 1000 veces, siempre con el mismo resultado. Ahora se prepara una vez y se
 // compara muchas.
+//
+// Las descriptivas se sacan con la clase DE ESTA marca: CAFE se va de "CAFE
+// NUBIO" en la clase 30, pero no en la 9.
 export function prepararMarca(marca) {
-    const lista = quitarGenericos(tokens(marca.denominacion))
+    const lista = quitarGenericos(tokens(marca.denominacion), marca.clase_niza)
     const texto = lista.join(' ')
     return {
         clase_niza: marca.clase_niza,
+        titular: normalizarTitular(marca.titular),
+        // País del titular: dos titulares con el mismo nombre en países distintos
+        // no son el mismo (revisión de Case del motor, A1)
+        pais: String(marca.pais ?? '').trim().toUpperCase(),
         texto,
         esp: claveEspanol(texto),
         gua: claveGuarani(texto),
@@ -70,6 +77,21 @@ function contencion(a, b) {
     const [corta, larga] = a.length <= b.length ? [a, b] : [b, a]
     if (corta.length < LARGO_MINIMO_TOKEN) return 0
     return ` ${larga} `.includes(` ${corta} `) ? 1 : 0
+}
+
+// ¿Las dos marcas (ya preparadas) son del mismo titular? Contra una marca
+// propia no se presenta oposición: la abogada confirmó que esas alertas "no
+// aplican" (noviembre 2026).
+// Titular normalizado IGUAL (casi literal, ver normalizarTitular) y mismo país.
+// Nunca "parecido": si dos titulares iguales no se reconocen, sale una alerta de
+// más (molesta); si dos distintos se tomaran por iguales, se escondería un
+// conflicto real (grave). Límite conocido: dos personas distintas con el mismo
+// nombre completo y del mismo país se toman como una; distinguirlas pediría la
+// cédula o el RUC, que los boletines no traen.
+export function mismoTitular(mia, ajena) {
+    return Boolean(mia.titular) && Boolean(mia.pais)
+        && mia.titular === ajena.titular
+        && mia.pais === ajena.pais
 }
 
 // Compara una marca propia con una del boletín. Cada una es { denominacion, clase_niza }.

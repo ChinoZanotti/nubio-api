@@ -13,6 +13,7 @@
     "importar-boletin": "node scripts/importar-boletin.js",
     "convertir-boletin-semanal": "node scripts/convertir-boletin-semanal.js",
     "recalcular-alertas": "node scripts/recalcular-alertas.js",
+    "depurar-alertas": "node scripts/depurar-alertas.js",
     "probar-conexion": "node scripts/probar-conexion.js",
     "backup": "node scripts/backup.js"
   },

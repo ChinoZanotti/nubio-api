@@ -1,9 +1,10 @@
-import { compararPreparadas, prepararMarca, UMBRAL_ALERTA } from '../utils/similitud/index.js'
+import { compararPreparadas, prepararMarca, mismoTitular, UMBRAL_ALERTA } from '../utils/similitud/index.js'
 import { hoy, venceOposicion } from '../utils/plazos.js'
 import { registrarError } from '../utils/log.js'
 
-const COLUMNAS_MARCA = ['id', 'expediente', 'clase_niza', 'denominacion', 'signo']
-const COLUMNAS_BOLETIN = ['id', 'fecha_publicacion', 'expediente', 'clase_niza', 'denominacion', 'signo', 'tramite']
+// titular y pais: para descartar los pares del mismo titular (mismoTitular)
+export const COLUMNAS_MARCA = ['id', 'expediente', 'clase_niza', 'denominacion', 'signo', 'titular', 'pais']
+export const COLUMNAS_BOLETIN = ['id', 'fecha_publicacion', 'expediente', 'clase_niza', 'denominacion', 'signo', 'tramite', 'titular', 'pais']
 
 // 60 días hábiles son unos 85 días corridos; 100 deja margen para feriados.
 // Es solo un prefiltro en SQL: el plazo exacto se calcula después en JS.
@@ -13,13 +14,45 @@ const tieneTexto = (m) => m.signo !== 'F' && Boolean(m.denominacion?.trim())
 
 // Reglas que descartan un par antes de compararlo:
 // - figurativas puras: no hay texto que comparar;
-// - renovaciones: no se oponen como una solicitud nueva (PENDIENTE validar con el abogado);
+// - renovaciones publicadas: no se les presenta oposición (confirmado por la
+//   abogada, noviembre 2026; las marcas propias en renovación sí se vigilan);
 // - mismo expediente: es la propia solicitud del usuario publicada en el boletín.
+// El mismo titular también se descarta, en evaluarPar (ver mismoTitular).
 function esComparable(marca, publicada) {
     return tieneTexto(marca)
         && tieneTexto(publicada)
-        && !publicada.tramite.startsWith('Renovación')
+        && !publicada.tramite?.startsWith('Renovación')
         && marca.expediente !== publicada.expediente
+}
+
+// Alertas que NADIE tocó: estado nueva, sin nota y sin modificar nunca. Las
+// dos fechas nacen iguales (DEFAULT now() en el mismo INSERT) y el PATCH de
+// una alerta sube updated_at. Sin la condición de las fechas, una alerta que
+// alguien pasó a "en revisión" y después volvió a "nueva" sin nota parecía
+// intacta, y se borraba (revisión de Case del motor, M1). Lo usan la
+// regeneración de una marca editada y scripts/depurar-alertas.js.
+export function sinTocar(consulta) {
+    return consulta.where({ estado: 'nueva' }).whereNull('nota').whereRaw('updated_at = created_at')
+}
+
+// TODAS las reglas que deciden si un par genera alerta, en un solo lugar: la
+// usan el motor (generarPares) y scripts/depurar-alertas.js. Antes estaban
+// copiadas en los dos, y una regla nueva podía entrar en uno solo (revisión de
+// Case del motor, B2). `mia` y `ajena` son las marcas ya preparadas.
+// Devuelve { descarte } con el motivo, o { descarte: null, resultado }.
+export const MOTIVOS_DESCARTE = {
+    regla: 'regla de exclusión',
+    titular: 'mismo titular',
+    puntaje: 'puntaje bajo el umbral',
+}
+export function evaluarPar(marca, publicada, mia, ajena) {
+    if (!esComparable(marca, publicada)) return { descarte: MOTIVOS_DESCARTE.regla }
+    // Contra una marca propia no se presenta oposición (confirmado por la
+    // abogada). Compara los titulares ya normalizados por prepararMarca.
+    if (mismoTitular(mia, ajena)) return { descarte: MOTIVOS_DESCARTE.titular }
+    const resultado = compararPreparadas(mia, ajena)
+    if (resultado.score < UMBRAL_ALERTA) return { descarte: MOTIVOS_DESCARTE.puntaje, resultado }
+    return { descarte: null, resultado }
 }
 
 // Node atiende todo en un solo hilo: mientras el motor compara, ningún otro
@@ -64,9 +97,8 @@ async function generarPares(marcas, publicadas, preparadas = null) {
         const mia = prepararMarca(marca)
         for (const publicada of publicadas) {
             if (pausa.toca()) await pausa.ceder()
-            if (!esComparable(marca, publicada)) continue
-            const r = compararPreparadas(mia, preparadas.get(publicada))
-            if (r.score < UMBRAL_ALERTA) continue
+            const { descarte, resultado: r } = evaluarPar(marca, publicada, mia, preparadas.get(publicada))
+            if (descarte) continue
             filas.push({
                 marca_id: marca.id,
                 boletin_marca_id: publicada.id,
@@ -173,7 +205,7 @@ async function publicadasEnPlazo(db) {
 //
 // `regenerar: true` es para una marca EDITADA en lo que compara el motor
 // (denominación, clase, signo o expediente): primero borra sus alertas que nadie
-// tocó (estado "nueva" y sin nota), que se calcularon con los datos viejos, y
+// tocó (ver sinTocar), que se calcularon con los datos viejos, y
 // después compara de nuevo. Las que el usuario ya revisó se conservan: son su
 // trabajo. Se hace acá, dentro del trabajo, y no en el pedido de edición: la
 // fila corre de a un trabajo, así que si la marca todavía tenía pendiente su
@@ -193,11 +225,7 @@ export async function generarAlertasParaMarcas(db, marcaIds, { regenerar = false
     if (!regenerar) return insertar(db, filas)
 
     return db.transaction(async (trx) => {
-        await trx('alertas')
-            .whereIn('marca_id', marcaIds)
-            .where({ estado: 'nueva' })
-            .whereNull('nota')
-            .del()
+        await sinTocar(trx('alertas').whereIn('marca_id', marcaIds)).del()
         return insertar(trx, filas)
     })
 }

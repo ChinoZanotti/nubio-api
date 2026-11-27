@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { compararMarcas, relacionClase, UMBRAL_ALERTA } from '../utils/similitud/index.js'
+import { compararMarcas, relacionClase, prepararMarca, mismoTitular, UMBRAL_ALERTA } from '../utils/similitud/index.js'
+import { normalizarTitular, quitarGenericos } from '../utils/similitud/normalizar.js'
 
 const marca = (denominacion, clase_niza = 25) => ({ denominacion, clase_niza })
 const score = (a, b, ca = 25, cb = 25) => compararMarcas(marca(a, ca), marca(b, cb)).score
@@ -63,4 +64,67 @@ test('relacionClase es simétrica', () => {
 
 test('marca sin denominación no compara', () => {
     assert.equal(compararMarcas(marca(null), marca('NUBIO')).score, 0)
+})
+
+// ===== Palabras descriptivas por clase (confirmado por la abogada, noviembre 2026) =====
+test('descriptiva como único punto en común: no hay alerta (CAFE NUBIO / CAFE TORRES, clase 30)', () => {
+    const r = compararMarcas(marca('CAFE NUBIO', 30), marca('CAFE TORRES', 30))
+    assert.equal(r.nivel, null, `score ${r.score}`)
+})
+
+test('descriptiva junto a algo distintivo: la alerta sigue (NUBIO / NUBIO CAFE, clase 30)', () => {
+    const r = compararMarcas(marca('NUBIO', 30), marca('NUBIO CAFE', 30))
+    assert.equal(r.score, 100)
+    assert.equal(r.nivel, 'alta')
+})
+
+test('la palabra es descriptiva solo en SU clase: CAFE en la 9 sigue contando', () => {
+    // Sin la lista, CAFE NUBIO / CAFE TORRES da 71 en la misma clase; en la 9 CAFE no es descriptiva
+    const r = compararMarcas(marca('CAFE NUBIO', 9), marca('CAFE TORRES', 9))
+    assert.ok(r.score >= UMBRAL_ALERTA, `score ${r.score}`)
+})
+
+test('una marca hecha solo de palabras descriptivas se compara entera', () => {
+    assert.deepEqual(quitarGenericos(['EL', 'CAFE'], 30), ['CAFE'])
+    assert.deepEqual(quitarGenericos(['CAFE', 'NUBIO'], 30), ['NUBIO'])
+    assert.deepEqual(quitarGenericos(['CAFE', 'NUBIO'], 9), ['CAFE', 'NUBIO'])
+    assert.deepEqual(quitarGenericos(['EL', 'DE']), ['EL', 'DE'])
+})
+
+test('genéricas nuevas: ESLOGAN y conectores no cuentan', () => {
+    assert.equal(compararMarcas(marca('NUBIO (ESLOGAN)'), marca('NUBIO')).score, 100)
+    assert.equal(compararMarcas(marca('QUE NUBIO'), marca('NUBIO')).score, 100)
+    // MAS no es genérica: puede ser lo distintivo de una marca ("MÁS", revisión de Case, M5)
+    assert.ok(compararMarcas(marca('MAS'), marca('SUPER MAS')).score >= UMBRAL_ALERTA)
+})
+
+// ===== Mismo titular (confirmado por la abogada: "no aplica") =====
+test('normalizarTitular: casi literal, unificando solo la forma societaria', () => {
+    assert.equal(normalizarTitular('Nubio S.A.'), normalizarTitular('NUBIO SA'))
+    assert.equal(normalizarTitular('Nubio S. A.'), normalizarTitular('nubio sa'))
+    assert.equal(normalizarTitular('Nubio Sociedad Anónima'), normalizarTitular('NUBIO S.A.'))
+    assert.equal(normalizarTitular('Nichebox UK Limited'), normalizarTitular('NICHEBOX UK LTD'))
+    assert.equal(normalizarTitular('José  Pérez'), normalizarTitular('JOSE PEREZ'))
+    assert.equal(normalizarTitular('S.A.'), '')
+    assert.equal(normalizarTitular(''), '')
+})
+
+test('normalizarTitular: NO hace iguales a titulares distintos (revisión de Case, A1)', () => {
+    assert.notEqual(normalizarTitular('Gloria S.A.'), normalizarTitular('Gloria S.R.L.'))
+    assert.notEqual(normalizarTitular('Gloria S.A.'), normalizarTitular('Gloria Inc.'))
+    assert.notEqual(normalizarTitular('María de los Ángeles Benítez'), normalizarTitular('María Ángeles Benítez'))
+    assert.notEqual(normalizarTitular('González González, María'), normalizarTitular('María González'))
+    assert.notEqual(normalizarTitular('Juan Carlos Pérez'), normalizarTitular('Carlos Juan Pérez'))
+    assert.notEqual(normalizarTitular('Banco X Paraguay S.A.'), normalizarTitular('Banco X S.A.'))
+})
+
+test('mismoTitular: titular normalizado igual Y mismo país', () => {
+    const p = (titular, pais = 'PY') => prepararMarca({ denominacion: 'X', clase_niza: 25, titular, pais })
+    assert.equal(mismoTitular(p('Nubio S.A.'), p('NUBIO SA')), true)
+    assert.equal(mismoTitular(p('Juan Ramón Bueno Jara'), p('JUAN RAMON BUENO JARA')), true)
+    assert.equal(mismoTitular(p('Nubio S.A.', 'PY'), p('Nubio S.A.', 'AR')), false) // otro país
+    assert.equal(mismoTitular(p('Nubio S.A.', ''), p('Nubio S.A.', '')), false) // sin país no se decide
+    assert.equal(mismoTitular(p('Juan Ramón Bueno Jara'), p('Juan Ramón Bueno')), false)
+    assert.equal(mismoTitular(p(''), p('')), false)
+    assert.equal(mismoTitular(p('S.A.'), p('S.A.')), false) // solo forma societaria
 })
