@@ -18,7 +18,8 @@
     "backup": "node scripts/backup.js",
     "suspender-cuenta": "node scripts/estado-cuenta.js suspender",
     "reactivar-cuenta": "node scripts/estado-cuenta.js reactivar",
-    "operadores": "node scripts/operadores.js"
+    "operadores": "node scripts/operadores.js",
+    "borrar-cuenta": "node scripts/borrar-cuenta.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
