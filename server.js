@@ -18,6 +18,7 @@ import { verificarConfiguracion } from './utils/token.js'
 import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk, handleUpdateMarca, handleDeleteMarca } from './controllers/marcas.js'
 import { handleBuscarBoletinMarcas } from './controllers/boletines.js'
 import { handleGetAlertas, handleResumenAlertas, handleUpdateAlerta } from './controllers/alertas.js'
+import { handleCuotaCliente } from './controllers/cuota.js'
 
 // Sin JWT_SECRET no se pueden firmar ni verificar tokens: cortamos al arrancar.
 verificarConfiguracion()
@@ -147,6 +148,11 @@ app.get('/alertas', conSesion, (req, res) => handleGetAlertas(req, res, db))
 // Contador del menú del frontend: { nuevas, urgentes }, sin traer las alertas.
 app.get('/alertas/resumen', conSesion, (req, res) => handleResumenAlertas(req, res, db))
 app.patch('/alertas/:id', conSesion, (req, res) => handleUpdateAlerta(req, res, db))
+
+// Aviso de cuota (panel comercial, etapa 4): { estado, pagado_hasta, dias } de
+// la cuenta del token. Existe aunque el panel esté apagado (sin pagos, dice
+// 'sin_pagos'); necesita sql/017.
+app.get('/cuenta/cuota', conSesion, (req, res) => handleCuotaCliente(req, res, db))
 
 // --- Panel comercial (etapa 2): router aparte, ver routes/admin.js ---
 if (conPanel) app.use('/admin', crearRutasAdmin(db, bcrypt))

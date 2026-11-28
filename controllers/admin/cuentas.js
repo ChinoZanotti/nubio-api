@@ -15,6 +15,8 @@ import { registrarAuditoria, ORIGEN } from '../../services/auditoria.js'
 import { crearActivacionUsuario } from '../../services/activacionUsuario.js'
 import { suspenderCuenta, reactivarCuenta } from '../../services/cuentas.js'
 import { encolarAlertasParaMarcas } from '../../services/alertas.js'
+import { datosDeCuota, resumenCuota } from '../../services/cuotas.js'
+import { estadoCuota, hoyEnParaguay } from '../../utils/cuotas.js'
 
 const UNIQUE_VIOLATION = '23505'
 const CHECK_VIOLATION = '23514'
@@ -40,7 +42,8 @@ function errorDeValidacion(res, errores) {
 const ULTIMO_LINK = 'SELECT id, vence_at FROM activaciones_usuario WHERE user_id = u.id AND usada_at IS NULL AND revocada_at IS NULL ORDER BY id DESC LIMIT 1'
 
 // GET /admin/cuentas: todas (son cientos, no miles): la pantalla filtra y
-// ordena. Columnas explícitas.
+// ordena. Columnas explícitas. Con la cuota (etapa 4): "pagado hasta" y su
+// estado, calculado acá con la fecha de Paraguay (utils/cuotas.js).
 export async function handleListarCuentas(req, res, db) {
     try {
         const filas = await db('cuentas as c')
@@ -48,15 +51,20 @@ export async function handleListarCuentas(req, res, db) {
             // El usuario de la cuenta (hoy uno por cuenta): el más antiguo
             .joinRaw('LEFT JOIN LATERAL (SELECT id, email FROM users WHERE cuenta_id = c.id ORDER BY id LIMIT 1) AS u ON true')
             .joinRaw(`LEFT JOIN LATERAL (${ULTIMO_LINK}) AS al ON true`)
+            .joinRaw('LEFT JOIN LATERAL (SELECT max(hasta) AS pagado_hasta FROM pagos_cuenta WHERE cuenta_id = c.id AND anulado_at IS NULL) AS pg ON true')
             .select(
                 'c.id', 'c.nombre', 'c.estado', 'c.estado_desde', 'c.plan', 'c.created_at',
                 'f.nombre_completo', 'f.telefono', 'f.modalidad', 'f.medio_pago', 'f.monto_mensual', 'f.fecha_ingreso', 'f.dia_pago',
-                'u.email', 'al.vence_at as link_vence',
+                'u.email', 'al.vence_at as link_vence', 'pg.pagado_hasta',
                 db.raw('EXISTS (SELECT 1 FROM login l WHERE l.email = u.email) AS activado'),
             )
             .orderBy('c.nombre')
             .limit(5000)
-        res.json(filas)
+        const hoy = hoyEnParaguay()
+        res.json(filas.map((c) => ({
+            ...c,
+            cuota: estadoCuota({ pagadoHasta: c.pagado_hasta, modalidad: c.modalidad, suspendida: c.estado === 'suspendida' }, hoy).estado,
+        })))
     } catch (err) {
         registrarError('GET /admin/cuentas', err)
         res.status(500).json({ error: 'No se pudieron obtener las cuentas.' })
@@ -86,6 +94,14 @@ export async function handleVerCuenta(req, res, db) {
         const notas = await db('notas_cuenta as n').join('operadores as o', 'o.id', 'n.operador_id')
             .where('n.cuenta_id', id).orderBy('n.created_at', 'desc').limit(200)
             .select('n.id', 'n.texto', 'n.created_at', 'o.nombre as autor')
+        // Los pagos, con quién los registró y quién los anuló (etapa 4)
+        const pagos = await db('pagos_cuenta as p')
+            .join('operadores as o', 'o.id', 'p.operador_id')
+            .leftJoin('operadores as oa', 'oa.id', 'p.anulado_por')
+            .where('p.cuenta_id', id).orderBy([{ column: 'p.created_at', order: 'desc' }, { column: 'p.id', order: 'desc' }]).limit(200)
+            .select('p.id', 'p.fecha_pago', 'p.desde', 'p.hasta', 'p.meses', 'p.monto', 'p.medio_pago', 'p.created_at',
+                'p.anulado_at', 'p.motivo_anulacion', 'p.dia_pago_anterior', 'o.nombre as autor', 'oa.nombre as anulado_por')
+        const cuota = resumenCuota(await datosDeCuota(db, id))
         const actividad = await db('auditoria_admin as a').leftJoin('operadores as o', 'o.id', 'a.operador_id')
             .where('a.cuenta_id', id).orderBy('a.created_at', 'desc').limit(50)
             .select('a.id', 'a.accion', 'a.detalle', 'a.origen', 'a.created_at', 'o.nombre as autor')
@@ -94,6 +110,8 @@ export async function handleVerCuenta(req, res, db) {
             facturacion: facturacion ?? null,
             usuario: usuario ? { email: usuario.email, activado, link_vence: linkPendiente?.vence_at ?? null, link_ips: linkIps } : null,
             notas,
+            cuota,
+            pagos,
             actividad,
         })
     } catch (err) {
@@ -160,7 +178,10 @@ export async function handleEditarCuenta(req, res, db) {
     if (Object.keys(errores).length) return errorDeValidacion(res, errores)
     try {
         const resultado = await db.transaction(async (trx) => {
-            const cuenta = await trx('cuentas').where({ id }).first('id')
+            // La cuenta se bloquea primero, como al registrar o anular un pago:
+            // el mismo orden en todas las rutas, para que no se traben entre sí
+            // (Case, M3 de la etapa 4)
+            const cuenta = await trx('cuentas').where({ id }).forUpdate().first('id')
             if (!cuenta) return { status: 404 }
             const anterior = await trx('cuentas_facturacion').where({ cuenta_id: id }).first(...CAMPOS_FACTURACION, 'version')
             if (!anterior && version !== 0) return { status: 409 }
@@ -186,7 +207,7 @@ export async function handleEditarCuenta(req, res, db) {
     } catch (err) {
         // Dos operadores completando a la vez una cuenta de antes del panel: el
         // segundo INSERT choca con la clave (Case, B3). Es el mismo conflicto.
-        if (err.code === UNIQUE_VIOLATION) return res.status(409).json(CUENTA_MODIFICADA)
+        if (err.code === UNIQUE_VIOLATION || err.code === '40P01' || err.code === '40001') return res.status(409).json(CUENTA_MODIFICADA)
         if (err.code === CHECK_VIOLATION) return res.status(400).json({ error: 'Algún dato de la cuenta no es válido.' })
         registrarError('PATCH /admin/cuentas/:id', err)
         res.status(500).json({ error: 'No se pudieron guardar los datos.' })

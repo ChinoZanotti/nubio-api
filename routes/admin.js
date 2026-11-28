@@ -8,9 +8,10 @@
 // Case, A2): el equipo comercial no ve la cartera de los clientes.
 import express from 'express'
 import { crearRequireOperador } from '../middleware/requireOperador.js'
-import { limitadorAdminLogin, limitadorAdminCodigo, limitadorAdminActivacion, limitadorOperador, limitadorEstadoCuenta } from '../middleware/rateLimit.js'
+import { limitadorAdminLogin, limitadorAdminCodigo, limitadorAdminActivacion, limitadorOperador, limitadorEstadoCuenta, limitadorPagos } from '../middleware/rateLimit.js'
 import { handleAdminSignin, handleAdminCodigo, handleAdminMe, handleAdminSalir } from '../controllers/admin/sesion.js'
 import { handleVerActivacion, handleActivar } from '../controllers/admin/activacion.js'
+import { handleRegistrarPago, handleAnularPago } from '../controllers/admin/pagos.js'
 import { handleListarCuentas, handleVerCuenta, handleCrearCuenta, handleEditarCuenta, handleAgregarNota, handleSuspender, handleReactivar, handleNuevoLink } from '../controllers/admin/cuentas.js'
 
 export function crearRutasAdmin(db, bcrypt) {
@@ -44,6 +45,10 @@ export function crearRutasAdmin(db, bcrypt) {
     rutas.post('/cuentas/:id/suspender', conOperador, limitadorEstadoCuenta, (req, res) => handleSuspender(req, res, db))
     rutas.post('/cuentas/:id/reactivar', conOperador, limitadorEstadoCuenta, (req, res) => handleReactivar(req, res, db))
     rutas.post('/cuentas/:id/link', conOperador, (req, res) => handleNuevoLink(req, res, db))
+
+    // Pagos (etapa 4)
+    rutas.post('/cuentas/:id/pagos', conOperador, limitadorPagos, (req, res) => handleRegistrarPago(req, res, db))
+    rutas.post('/cuentas/:id/pagos/:pagoId/anular', conOperador, limitadorPagos, (req, res) => handleAnularPago(req, res, db))
 
     return rutas
 }

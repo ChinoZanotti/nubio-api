@@ -246,6 +246,16 @@ export const limitadorEstadoCuenta = limitador('estado_cuenta', {
     message: { error: 'Ya suspendiste o reactivaste muchas cuentas en la última hora. Esperá un rato y volvé a probar.' },
 })
 
+// Registrar y anular pagos (etapa 4), por operador: 60 por hora entre las dos.
+// Los pagos no se borran: una sesión robada o un error en bucle dejaría basura
+// para siempre en el historial (Case, B3 de la etapa 4).
+export const limitadorPagos = limitador('pagos', {
+    windowMs: UNA_HORA,
+    limit: 60,
+    keyGenerator: (req) => `operador:${req.operadorId}`,
+    message: { error: 'Registraste o anulaste muchos pagos en la última hora. Esperá un rato y volvé a probar.' },
+})
+
 // Links de activación de clientes (etapa 3), públicos: 20 por hora por IP.
 export const limitadorActivacionCuenta = limitador('activacion_cuenta', {
     windowMs: UNA_HORA,
