@@ -8,9 +8,10 @@
 // Case, A2): el equipo comercial no ve la cartera de los clientes.
 import express from 'express'
 import { crearRequireOperador } from '../middleware/requireOperador.js'
-import { limitadorAdminLogin, limitadorAdminCodigo, limitadorAdminActivacion, limitadorOperador } from '../middleware/rateLimit.js'
+import { limitadorAdminLogin, limitadorAdminCodigo, limitadorAdminActivacion, limitadorOperador, limitadorEstadoCuenta } from '../middleware/rateLimit.js'
 import { handleAdminSignin, handleAdminCodigo, handleAdminMe, handleAdminSalir } from '../controllers/admin/sesion.js'
 import { handleVerActivacion, handleActivar } from '../controllers/admin/activacion.js'
+import { handleListarCuentas, handleVerCuenta, handleCrearCuenta, handleEditarCuenta, handleAgregarNota, handleSuspender, handleReactivar, handleNuevoLink } from '../controllers/admin/cuentas.js'
 
 export function crearRutasAdmin(db, bcrypt) {
     const rutas = express.Router({ caseSensitive: true })
@@ -33,6 +34,16 @@ export function crearRutasAdmin(db, bcrypt) {
     // Con sesión de operador
     rutas.get('/me', conOperador, handleAdminMe)
     rutas.post('/salir', conOperador, (req, res) => handleAdminSalir(req, res, db))
+
+    // Cuentas (etapa 3)
+    rutas.get('/cuentas', conOperador, (req, res) => handleListarCuentas(req, res, db))
+    rutas.post('/cuentas', conOperador, (req, res) => handleCrearCuenta(req, res, db))
+    rutas.get('/cuentas/:id', conOperador, (req, res) => handleVerCuenta(req, res, db))
+    rutas.patch('/cuentas/:id', conOperador, (req, res) => handleEditarCuenta(req, res, db))
+    rutas.post('/cuentas/:id/notas', conOperador, (req, res) => handleAgregarNota(req, res, db))
+    rutas.post('/cuentas/:id/suspender', conOperador, limitadorEstadoCuenta, (req, res) => handleSuspender(req, res, db))
+    rutas.post('/cuentas/:id/reactivar', conOperador, limitadorEstadoCuenta, (req, res) => handleReactivar(req, res, db))
+    rutas.post('/cuentas/:id/link', conOperador, (req, res) => handleNuevoLink(req, res, db))
 
     return rutas
 }

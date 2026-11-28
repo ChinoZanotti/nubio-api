@@ -5,7 +5,9 @@
 //
 // Acciones: operador_creado, operador_activado, operador_reseteado,
 // operador_desactivado, login, logout, codigo_fallido, bloqueo_codigo,
-// activacion_vista, cuenta_suspendida, cuenta_reactivada.
+// activacion_vista, cuenta_suspendida, cuenta_reactivada; etapa 3: cuenta_creada,
+// datos_editados, datos_completados, nota_agregada, link_generado,
+// activacion_cliente_vista, cliente_activado, cliente_cambio_password.
 //
 // `detalle`: sin datos personales. Ids y nombres de campos, nunca valores
 // (ni teléfonos, ni montos con nombre, ni notas). Lo que corre un script lleva

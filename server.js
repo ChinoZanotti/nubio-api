@@ -6,12 +6,13 @@ import { handleRegister } from './controllers/register.js'
 import { handleSignin } from './controllers/signin.js'
 import { handleMe, handleUpdateMe, handleCambiarPassword } from './controllers/me.js'
 import { crearRequireAuth } from './middleware/requireAuth.js'
-import { limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorUsuario, limitadorImportacion, limitadorBoletines, limitadorBoletinesSesion, limitadorCambioPassword, limitadorEscrituraMarcas } from './middleware/rateLimit.js'
+import { limitadorActivacionCuenta, limitadorLogin, limitadorRegistro, limitadorGeneral, limitadorUsuario, limitadorImportacion, limitadorBoletines, limitadorBoletinesSesion, limitadorCambioPassword, limitadorEscrituraMarcas } from './middleware/rateLimit.js'
 import { crearLimiteSimultaneo } from './middleware/simultaneos.js'
 import { corsPorRuta, helmetNubio, panelConfigurado, origenesSeSolapan } from './middleware/seguridad.js'
 import { configuracionTokenOperadorOk } from './utils/tokenOperador.js'
 import { configuracionCifradoOk } from './utils/cifrado.js'
 import { crearRutasAdmin } from './routes/admin.js'
+import { handleVerActivacionCuenta, handleActivarCuenta } from './controllers/activarCuenta.js'
 import { rutaNoEncontrada, manejarErrores } from './middleware/errores.js'
 import { verificarConfiguracion } from './utils/token.js'
 import { handleGetMarcas, handleCreateMarca, handleCreateMarcasBulk, handleUpdateMarca, handleDeleteMarca } from './controllers/marcas.js'
@@ -149,6 +150,17 @@ app.patch('/alertas/:id', conSesion, (req, res) => handleUpdateAlerta(req, res, 
 
 // --- Panel comercial (etapa 2): router aparte, ver routes/admin.js ---
 if (conPanel) app.use('/admin', crearRutasAdmin(db, bcrypt))
+
+// Activación de clientes (etapa 3): el link que genera el panel. Públicas y de
+// la APP (CORS de FRONTEND_URL): el cliente crea su contraseña en Nubio. Solo
+// con el panel encendido (el token se verifica con ADMIN_CIFRADO_KEY).
+// Sin caché (Case, I3): devuelven el nombre y el correo del cliente.
+const sinCache = (req, res, next) => { res.set('Cache-Control', 'no-store'); next() }
+if (conPanel) {
+    app.use('/activar-cuenta', sinCache)
+    app.post('/activar-cuenta/ver', limitadorActivacionCuenta, (req, res) => handleVerActivacionCuenta(req, res, db))
+    app.post('/activar-cuenta', limitadorActivacionCuenta, (req, res) => handleActivarCuenta(req, res, db, bcrypt))
+}
 
 // --- Al final, siempre: lo que no atendió ninguna ruta ---
 app.use(rutaNoEncontrada)

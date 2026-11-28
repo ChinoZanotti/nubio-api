@@ -235,3 +235,20 @@ export const limitadorOperador = limitador('operador', {
     keyGenerator: (req) => `operador:${req.operadorId}`,
     message: { error: 'Demasiados pedidos. Esperá unos minutos y volvé a probar.' },
 })
+
+// Suspender y reactivar (etapa 3), por operador: 10 por hora entre las dos.
+// Cada reactivación pone la cartera entera en la fila del motor, que es una
+// para todos (Case, M1). Una persona no suspende 10 cuentas por hora.
+export const limitadorEstadoCuenta = limitador('estado_cuenta', {
+    windowMs: UNA_HORA,
+    limit: 10,
+    keyGenerator: (req) => `operador:${req.operadorId}`,
+    message: { error: 'Ya suspendiste o reactivaste muchas cuentas en la última hora. Esperá un rato y volvé a probar.' },
+})
+
+// Links de activación de clientes (etapa 3), públicos: 20 por hora por IP.
+export const limitadorActivacionCuenta = limitador('activacion_cuenta', {
+    windowMs: UNA_HORA,
+    limit: 20,
+    message: { error: 'Demasiados intentos. Esperá un rato y volvé a probar.' },
+})
