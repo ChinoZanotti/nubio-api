@@ -1,0 +1,9 @@
+# Finales de línea de los documentos (.md): siempre los de Linux (LF), en el
+# repo y en la carpeta de trabajo, también en Windows.
+#
+# Por qué (28/11/2026): Obsidian guarda los .md con LF al abrirlos. Con
+# core.autocrlf=true, git en Windows esperaba CRLF y los marcaba como
+# cambiados aunque el texto fuera el mismo. En c:\dev\nubio-api-produccion eso
+# frena los scripts contra producción (utils/repoDeployado.js exige la carpeta
+# sin cambios). Con eol=lf, lo que guarda Obsidian coincide con lo que espera git.
+*.md text eol=lf
